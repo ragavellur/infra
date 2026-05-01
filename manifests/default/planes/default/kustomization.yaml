@@ -64,9 +64,6 @@ patches:
         - name: state
           persistentVolumeClaim:
             claimName: planes-state
-        - name: config-data
-          secret:
-            secretName: adsblol-rclone
 
     # 4. FIX MOUNTS: Re-define the list to ensure each path is unique
     - op: replace
@@ -87,44 +84,45 @@ patches:
           mountPath: /opt/tar1090/html/layers.js
           subPath: layers.js
 
-# This restores the rclone sidecar exactly as requested
-- target:
-    kind: Deployment
-    name: readsb
-  patch: |-
-    - op: add
-      path: /spec/template/spec/containers/1
-      value:
-        name: rclone
-        image: "rclone/rclone"
-        securityContext:
-          privileged: true
-          capabilities:
-            add: ["SYS_ADMIN"]
-        args:
-          - -v
-          - mount
-          - "bharat-radar-planes-default:adsblol"
-          - /adsblol/adsblol
-          - --config=/etc/rclone/rclone.conf
-          - --allow-non-empty
-          - --allow-other
-          - --poll-interval=9s
-          - --dir-cache-time=9999h
-        lifecycle:
-          preStop:
-            exec:
-              command: ["/bin/sh", "-c", "fusermount -uz /adsblol"]
-        resources:
-          requests:
-            cpu: 250m
-            memory: 100Mi
-          limits:
-            cpu: 1
-            memory: 2048Mi
-        volumeMounts:
-          - name: config-data
-            mountPath: /etc/rclone
-          - name: adsblol
-            mountPath: /adsblol
-            mountPropagation: Bidirectional
+# rclone sidecar disabled - needs adsblol-rclone secret with OneDrive config
+# Uncomment when secret is available:
+# - target:
+#     kind: Deployment
+#     name: readsb
+#   patch: |-
+#     - op: add
+#       path: /spec/template/spec/containers/1
+#       value:
+#         name: rclone
+#         image: "rclone/rclone"
+#         securityContext:
+#           privileged: true
+#           capabilities:
+#             add: ["SYS_ADMIN"]
+#         args:
+#           - -v
+#           - mount
+#           - "bharat-radar-planes-default:adsblol"
+#           - /adsblol/adsblol
+#           - --config=/etc/rclone/rclone.conf
+#           - --allow-non-empty
+#           - --allow-other
+#           - --poll-interval=9s
+#           - --dir-cache-time=9999h
+#         lifecycle:
+#           preStop:
+#             exec:
+#               command: ["/bin/sh", "-c", "fusermount -uz /adsblol"]
+#         resources:
+#           requests:
+#             cpu: 250m
+#             memory: 100Mi
+#           limits:
+#             cpu: 1
+#             memory: 2048Mi
+#         volumeMounts:
+#           - name: config-data
+#             mountPath: /etc/rclone
+#           - name: adsblol
+#             mountPath: /adsblol
+#             mountPropagation: Bidirectional

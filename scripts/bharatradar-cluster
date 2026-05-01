@@ -185,6 +185,13 @@ deploy_hub_services() {
         mv kustomize /usr/local/bin/
     fi
 
+    # Apply shared resources first (ConfigMaps, Ingresses, etc.)
+    local shared_resources="${MANIFEST_DIR}/default/resources.yaml"
+    if [ -f "$shared_resources" ]; then
+        log_info "Applying shared resources..."
+        kubectl apply -f "$shared_resources" -n adsblol 2>/dev/null || true
+    fi
+
     # Deploy components in order
     local components=("api" "redis" "mlat" "mlat-map" "haproxy" "ingest" "hub" "external" "reapi" "planes")
 
