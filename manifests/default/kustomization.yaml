@@ -5,10 +5,10 @@ resources:
 - hub/default
 - mlat/default  # ✅ adsblol/mlat-server works
 - reapi/default
-#- planes-default  # needs adsblol-rclone secret
+- planes/default
 - mlat-map/default
-- api-default  
-- history-default  # ✅ ragavellur/history forked
+- api/default
+- history/default
 - redis/default
 - resources.yaml
 namespace: adsblol
