@@ -84,9 +84,6 @@ patches:
           mountPath: /tar1090-config/config.js
           subPath: config.js
         - name: tar1090-config
-          mountPath: /etc/cont-init.d/04-tar1090-configure
-          subPath: 04-tar1090-configure
-        - name: tar1090-config
           mountPath: /opt/tar1090/html/layers.js
           subPath: layers.js
 

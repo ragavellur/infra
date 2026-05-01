@@ -17,3 +17,17 @@ patches:
       value:
         name: READSB_NET_BEAST_INPUT_PORT
         value: "30004"
+    - op: add
+      path: /spec/template/spec/containers/0/env/-
+      value:
+        name: READSB_DEVICE_TYPE
+        value: "none"
+    - op: replace
+      path: /spec/template/spec/containers/0/livenessProbe
+      value: null
+    - op: replace
+      path: /spec/template/spec/containers/0/readinessProbe
+      value: null
+    - op: replace
+      path: /spec/template/spec/containers/0/startupProbe
+      value: null

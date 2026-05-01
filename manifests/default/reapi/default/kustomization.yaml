@@ -12,3 +12,17 @@ patches:
     - op: replace
       path: /spec/template/spec/containers/0/command
       value: ["/init"]
+    - op: add
+      path: /spec/template/spec/containers/0/env/-
+      value:
+        name: READSB_DEVICE_TYPE
+        value: "none"
+    - op: replace
+      path: /spec/template/spec/containers/0/livenessProbe
+      value: null
+    - op: replace
+      path: /spec/template/spec/containers/0/readinessProbe
+      value: null
+    - op: replace
+      path: /spec/template/spec/containers/0/startupProbe
+      value: null

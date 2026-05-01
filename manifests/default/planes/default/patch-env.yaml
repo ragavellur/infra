@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: readsb
+spec:
+  template:
+    spec:
+      containers:
+      - name: readsb
+        image: ghcr.io/sdr-enthusiasts/docker-tar1090:latest
+        # Removing health checks that might be killing the pod too early
+        livenessProbe: null
+        readinessProbe: null
+        # Simplified command and env
+        command: ["/init"]
+        env:
+          - name: TZ
+            value: "Asia/Kolkata"
+          - name: READSB_LAT
+            value: "18.480718"
+          - name: READSB_LON
+            value: "73.898235"
+          - name: READSB_NET_ENABLE
+            value: "true"
+          - name: READSB_RX_LOCATION_ACCURACY
+            value: "2"
+        # Only keep the storage volume, remove the config/secret mounts for now
+        volumeMounts:
+        - name: state
+          mountPath: /var/globe_history/internal_state

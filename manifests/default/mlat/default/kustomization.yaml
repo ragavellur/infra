@@ -7,3 +7,39 @@ images:
 - name: ghcr.io/katlol/mlat-server
   newName: ghcr.io/adsblol/mlat-server
   newTag: latest
+patches:
+- target:
+    kind: Deployment
+    name: mlat-server
+  patch: |-
+    # Add init container to create pkg_resources stub for Python 3.13 compatibility
+    - op: add
+      path: /spec/template/spec/initContainers
+      value:
+        - name: fix-pkg-resources
+          image: busybox
+          command:
+            - sh
+            - -c
+            - mkdir -p /fix/pkg_resources && echo -e "__version__ = '69.0.0'\n\ndef declare_namespace(name):\n    import sys\n    import types\n    mod = sys.modules.get(name)\n    if mod is None:\n        mod = types.ModuleType(name)\n        mod.__path__ = []\n        sys.modules[name] = mod\n    return mod" > /fix/pkg_resources/__init__.py
+          volumeMounts:
+            - name: fix-pkg-resources
+              mountPath: /fix
+    # Add PYTHONPATH to include the fix
+    - op: add
+      path: /spec/template/spec/containers/0/env/-
+      value:
+        name: PYTHONPATH
+        value: /fix
+    # Add volume for the fix
+    - op: add
+      path: /spec/template/spec/volumes/-
+      value:
+        name: fix-pkg-resources
+        emptyDir: {}
+    # Mount the fix volume
+    - op: add
+      path: /spec/template/spec/containers/0/volumeMounts/-
+      value:
+        name: fix-pkg-resources
+        mountPath: /fix
