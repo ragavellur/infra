@@ -33,6 +33,11 @@ patches:
     - op: add
       path: /spec/template/spec/containers/0/env/-
       value:
+        name: READSB_DEVICE_TYPE
+        value: "none"
+    - op: add
+      path: /spec/template/spec/containers/0/env/-
+      value:
         name: READSB_NET_CONNECTOR
         value: "mlat-mlat-server,30104,sbs_in_mlat"
     - op: add
