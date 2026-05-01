@@ -102,7 +102,7 @@ patches:
         args:
           - -v
           - mount
-          - "adsblol:adsblol"
+          - "bharat-radar-planes-default:adsblol"
           - /adsblol/adsblol
           - --config=/etc/rclone/rclone.conf
           - --allow-non-empty
