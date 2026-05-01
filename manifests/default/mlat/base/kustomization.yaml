@@ -1,4 +1,4 @@
 resources:
-  - ../../../../bases/mlat-server/default
+  - ../../../../bases/mlat-server/base
 commonLabels:
   app: mlat

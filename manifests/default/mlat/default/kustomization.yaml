@@ -3,3 +3,7 @@ resources:
 namePrefix: mlat-
 commonLabels:
   service: public
+images:
+- name: ghcr.io/katlol/mlat-server
+  newName: ghcr.io/adsblol/mlat-server
+  newTag: latest

@@ -1,3 +1,4 @@
+---
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -8,7 +9,7 @@ kind: Service
 metadata:
   name: ingest
   annotations:
-    external-dns.alpha.kubernetes.io/hostname: in.adsb.lol,feed.adsb.lol,in.planes.lol,feed.planes.lol
+    external-dns.alpha.kubernetes.io/hostname: feed.bharat-radar.vellur.in
     load-balancer.hetzner.cloud/location: fsn1
     load-balancer.hetzner.cloud/uses-proxyprotocol: "true"
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
@@ -61,7 +62,6 @@ metadata:
   name: homepage
   annotations:
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
-    # /discord -> https://discord.gg/3wPfmyNFRq
     nginx.ingress.kubernetes.io/configuration-snippet: |
       location /discord {
         return 302 https://discord.gg/3wPfmyNFRq;
@@ -84,20 +84,10 @@ metadata:
 spec:
   tls:
   - hosts:
-    - adsb.lol
+    - bharat-radar.vellur.in
     secretName: adsblol-tls
   rules:
-  - host: adsb.lol
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: api
-            port:
-              number: 80
-  - host: planes.lol
+  - host: bharat-radar.vellur.in
     http:
       paths:
       - path: /
@@ -114,16 +104,13 @@ metadata:
   name: globe-reapi
   annotations:
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
-    # nginx.ingress.kubernetes.io/affinity: "cookie"
-    # nginx.ingress.kubernetes.io/session-cookie-name: "globe-reapi-sticky"
-    # nginx.ingress.kubernetes.io/session-cookie-max-age: "86400"
 spec:
   tls:
   - hosts:
-    - globe.adsb.lol
+    - map.bharat-radar.vellur.in
     secretName: adsblol-tls
   rules:
-  - host: globe.adsb.lol
+  - host: map.bharat-radar.vellur.in
     http:
       paths:
       - path: /re-api
@@ -131,16 +118,6 @@ spec:
         backend:
           service:
             name: planes-readsb
-            port:
-              name: http-api
-  - host: test.adsb.lol
-    http:
-      paths:
-      - path: /re-api
-        pathType: Prefix
-        backend:
-          service:
-            name: planes-readsb-test
             port:
               name: http-api
 ---
@@ -158,10 +135,10 @@ metadata:
 spec:
   tls:
   - hosts:
-    - adsb.lol
+    - map.bharat-radar.vellur.in
     secretName: adsblol-tls
   rules:
-  - host: globe.adsb.lol
+  - host: map.bharat-radar.vellur.in
     http:
       paths:
       - path: /
@@ -169,16 +146,6 @@ spec:
         backend:
           service:
             name: planes-readsb
-            port:
-              name: http
-  - host: test.adsb.lol
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: planes-readsb-test
             port:
               name: http
 ---
@@ -192,11 +159,8 @@ spec:
     name: letsencrypt-cloudflare
     kind: ClusterIssuer
   dnsNames:
-  - adsb.lol
-  - "*.adsb.lol"
-  - "planes.lol"
-  - "*.planes.lol"
-  - "*.freebnc.net"
+  - bharat-radar.vellur.in
+  - "*.bharat-radar.vellur.in"
   usages:
   - digital signature
   - key encipherment
@@ -225,10 +189,10 @@ metadata:
 spec:
   tls:
   - hosts:
-    - adsb.lol
+    - history.bharat-radar.vellur.in
     secretName: adsblol-tls
   rules:
-  - host: history.adsb.lol
+  - host: history.bharat-radar.vellur.in
     http:
       paths:
       - path: /
@@ -249,10 +213,10 @@ metadata:
 spec:
   tls:
   - hosts:
-    - adsb.lol
+    - mlat.bharat-radar.vellur.in
     secretName: adsblol-tls
   rules:
-  - host: map.adsb.lol
+  - host: mlat.bharat-radar.vellur.in
     http:
       paths:
       - path: /
@@ -281,10 +245,10 @@ metadata:
 spec:
   tls:
   - hosts:
-    - adsb.lol
+    - mlat.bharat-radar.vellur.in
     secretName: adsblol-tls
   rules:
-  - host: map.adsb.lol
+  - host: mlat.bharat-radar.vellur.in
     http:
       paths:
       - path: /synctable/0A(/|$)(.*)

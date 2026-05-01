@@ -11,90 +11,84 @@ configMapGenerator:
   behavior: merge
 commonLabels:
   stage: prod
+
 patches:
+- path: patch-env.yaml
 - target:
     kind: Deployment
+    name: readsb
   patch: |-
+    # 1. Update entrypoint and disable health checks causing reboots
+    - op: replace
+      path: /spec/template/spec/containers/0/command
+      value: ["/init"]
+    - op: replace
+      path: /spec/template/spec/containers/0/livenessProbe
+      value: null
+    - op: replace
+      path: /spec/template/spec/containers/0/startupProbe
+      value: null
+
+    # 2. Add Pune location and MLAT network variables
     - op: add
       path: /spec/template/spec/containers/0/env/-
       value:
         name: READSB_NET_CONNECTOR
         value: "mlat-mlat-server,30104,sbs_in_mlat"
-    - op: replace
-      # livenessProbe for container readsb
-      # 404 /data/receiver.json caused downtime
-      path: /spec/template/spec/containers/0/livenessProbe
-      value:
-        httpGet:
-          path: /data/receiver.json
-          port: http
-        periodSeconds: 10
-        tcpSocket: null
-    - op: replace
-      path: /spec/strategy
-      value:
-        type: Recreate
     - op: add
       path: /spec/template/spec/containers/0/env/-
       value:
         name: READSB_EXTRA_ARGS
         value: "--debug=nS --net-receiver-id --tar1090-use-api --write-json-globe-index --heatmap 30 --write-globe-history /var/globe_history --write-prom=/run/readsb/metrics"
-    - op: add
-      path: /spec/template/spec/volumes/-
+
+    # 3. FIX VOLUMES: Defines all storage needed for all features
+    - op: replace
+      path: /spec/template/spec/volumes
       value:
-        name: tar1090-config
-        configMap:
-          name: tar1090-config
-          defaultMode: 0755
-    - op: add
-      path: /spec/template/spec/volumes/-
+        - name: run
+          emptyDir: {}
+        - name: serve-run-http-config
+          configMap:
+            name: serve-run-http-config
+        - name: tar1090-config
+          configMap:
+            name: tar1090-config
+            defaultMode: 0755
+        - name: adsblol
+          emptyDir: {}
+        - name: state
+          persistentVolumeClaim:
+            claimName: planes-state
+        - name: config-data
+          secret:
+            secretName: adsblol-rclone
+
+    # 4. FIX MOUNTS: Re-define the list to ensure each path is unique
+    - op: replace
+      path: /spec/template/spec/containers/0/volumeMounts
       value:
-        name: adsblol
-        emptyDir: {}
-    - op: add
-      path: /spec/template/spec/volumes/-
-      value:
-        name: state
-        persistentVolumeClaim:
-          claimName: planes-state
-    - op: add
-      path: /spec/template/spec/volumes/-
-      value:
-        name: config-data
-        secret:
-          secretName: adsblol-rclone
-    - op: add
-      path: /spec/template/spec/containers/0/volumeMounts/-
-      value:
-        name: adsblol
-        mountPath: /var/globe_history/2023
-        subPath: adsblol
-        mountPropagation: HostToContainer
-    - op: add
-      path: /spec/template/spec/containers/0/volumeMounts/-
-      value:
-        name: state
-        mountPath: /var/globe_history/internal_state
-    - op: add
-      path: /spec/template/spec/containers/0/volumeMounts/-
-      value:
-        name: tar1090-config
-        mountPath: /tar1090-config/config.js
-        subPath: config.js
-    - op: add
-      path: /spec/template/spec/containers/0/volumeMounts/-
-      value:
-        name: tar1090-config
-        mountPath: /etc/cont-init.d/04-tar1090-configure
-        subPath: 04-tar1090-configure
-    - op: add
-      path: /spec/template/spec/containers/0/volumeMounts/-
-      value:
-        name: tar1090-config
-        mountPath: /opt/tar1090/html/layers.js
-        subPath: layers.js
+        - name: run
+          mountPath: /run/readsb
+        - name: adsblol
+          mountPath: /var/globe_history/2023
+          subPath: adsblol
+          mountPropagation: HostToContainer
+        - name: state
+          mountPath: /var/globe_history/internal_state
+        - name: tar1090-config
+          mountPath: /tar1090-config/config.js
+          subPath: config.js
+        - name: tar1090-config
+          mountPath: /etc/cont-init.d/04-tar1090-configure
+          subPath: 04-tar1090-configure
+        - name: tar1090-config
+          mountPath: /opt/tar1090/html/layers.js
+          subPath: layers.js
+
+# This restores the rclone sidecar exactly as requested
 - target:
     kind: Deployment
+    name: readsb
   patch: |-
     - op: add
       path: /spec/template/spec/containers/1
@@ -104,8 +98,7 @@ patches:
         securityContext:
           privileged: true
           capabilities:
-            add:
-              - SYS_ADMIN
+            add: ["SYS_ADMIN"]
         args:
           - -v
           - mount

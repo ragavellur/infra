@@ -5,6 +5,8 @@ metadata:
 spec:
   template:
     spec:
+      imagePullSecrets:
+      - name: ghcr-secret
       volumes:
       - name: nginx-conf
         configMap:
@@ -30,7 +32,7 @@ spec:
           mountPath: /config
       containers:
       - name: history
-        image: ghcr.io/adsblol/history:main
+        image: ghcr.io/ragavellur/history:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080

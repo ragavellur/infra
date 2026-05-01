@@ -5,9 +5,11 @@ metadata:
 spec:
   template:
     spec:
+      imagePullSecrets:
+      - name: ghcr-secret
       containers:
       - name: api
-        image: ghcr.io/adsblol/api:main
+        image: ghcr.io/adsblol/api:latest
         imagePullPolicy: Always
         resources:
           requests:

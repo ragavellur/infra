@@ -5,6 +5,8 @@ metadata:
 spec:
   template:
     spec:
+      imagePullSecrets:
+      - name: ghcr-secret
       containers:
       - name: mlat-map
         image: ghcr.io/adsblol/mlat-server-sync-map:latest

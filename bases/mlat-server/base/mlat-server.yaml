@@ -1,4 +1,4 @@
-# A deployment running ghcr.io/katlol/mlat-server
+# A deployment running ghcr.io/adsblol/mlat-server
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,16 +8,19 @@ spec:
     type: Recreate
   template:
     spec:
+      imagePullSecrets:
+      - name: ghcr-secret
       containers:
       - name: mlat-server
-        image: ghcr.io/katlol/mlat-server
+        image: ghcr.io/adsblol/mlat-server:latest
+        imagePullPolicy: Always
         env:
         - {name: MKL_NUM_THREADS, value: "1"}
         - {name: NUMEXPR_NUM_THREADS, value: "1"}
         - {name: OMP_NUM_THREADS, value: "1"}
         - {name: PYTHONOPTIMIZE, value: "2"}
         command:
-        - python
+        - python3
         - /app/mlat-server
         - --work-dir=/run/mlat-server
         - --client-listen=31090
