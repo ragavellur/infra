@@ -1,0 +1,571 @@
+#!/bin/bash
+# BharatRadar Cluster Management Script
+# Version: 1.1.0
+#
+# Usage:
+#   bharatradar-cluster create --role hub   --domain <domain> --lat <lat> --lon <lon> [options]
+#   bharatradar-cluster create --role feeder --hub-ip <ip> [options]
+#   bharatradar-cluster info
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_DIR="$(dirname "$SCRIPT_DIR")"
+source "${SCRIPTS_DIR}/helpers/functions.sh"
+
+# Defaults
+MODE=""
+ROLE=""
+BASE_DOMAIN="bharat-radar.vellur.in"
+READSB_LAT="52.3676"
+READSB_LON="4.9041"
+TIMEZONE="UTC"
+HUB_IP=""
+K3S_TOKEN=""
+FRP_SERVER=""
+FRP_TOKEN=""
+FRP_VERSION="0.68.1"
+FRP_SUBDOMAINS=("map" "mlat" "history" "api" "feed" "ws")
+MANIFEST_DIR="${SCRIPTS_DIR}/manifests"
+
+SUBDOMAINS=("map" "mlat" "history" "api" "feed" "ws")
+
+usage() {
+    cat <<EOF
+Usage: $0 <COMMAND> [OPTIONS]
+
+Commands:
+  create      Create a new cluster node (hub or feeder)
+  info        Show cluster information
+
+Create Options:
+  --role ROLE         Node role: hub or feeder (required)
+  --domain DOMAIN     Base domain (default: bharat-radar.vellur.in)
+  --lat LAT           Receiver latitude (default: 52.3676)
+  --lon LON           Receiver longitude (default: 4.9041)
+  --timezone TZ       System timezone
+  --hub-ip IP         Hub LAN IP (required for feeder role)
+  --k3s-token TOKEN   K3s cluster token (auto-generated if empty)
+  --frp-server IP     FRP server IP for tunneling (hub only)
+  --frp-token TOKEN   FRP authentication token (hub only)
+  --help              Show this help message
+
+Examples:
+  # Create hub node
+  sudo $0 create --role hub --domain bharat-radar.vellur.in --lat 18.48 --lon 73.89
+
+  # Create hub with FRP tunnel
+  sudo $0 create --role hub --domain bharat-radar.vellur.in --lat 18.48 --lon 73.89 \
+    --frp-server 13.48.249.103 --frp-token "your-token"
+
+  # Create feeder node
+  sudo $0 create --role feeder --hub-ip 192.168.200.145
+
+  # Show info
+  sudo $0 info
+
+EOF
+    exit 0
+}
+
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+MODE="$1"
+shift
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --role)       ROLE="$2"; shift 2 ;;
+        --domain)     BASE_DOMAIN="$2"; shift 2 ;;
+        --lat)        READSB_LAT="$2"; shift 2 ;;
+        --lon)        READSB_LON="$2"; shift 2 ;;
+        --timezone)   TIMEZONE="$2"; shift 2 ;;
+        --hub-ip)     HUB_IP="$2"; shift 2 ;;
+        --k3s-token)  K3S_TOKEN="$2"; shift 2 ;;
+        --frp-server) FRP_SERVER="$2"; shift 2 ;;
+        --frp-token)  FRP_TOKEN="$2"; shift 2 ;;
+        --help)       usage ;;
+        *)            log_error "Unknown option: $1"; usage ;;
+    esac
+done
+
+install_k3s_server() {
+    log_step "Installing K3s Server"
+
+    if command -v k3s &>/dev/null; then
+        log_info "K3s already installed, verifying..."
+        if kubectl cluster-info &>/dev/null 2>&1; then
+            log_info "K3s server is running"
+            return 0
+        fi
+    fi
+
+    if [ -n "$K3S_TOKEN" ]; then
+        export K3S_TOKEN
+    fi
+
+    curl -sfL https://get.k3s.io | sh -
+
+    log_info "Waiting for K3s to be ready..."
+    for i in $(seq 1 60); do
+        if kubectl cluster-info &>/dev/null 2>&1; then
+            log_success "K3s server is ready"
+            return 0
+        fi
+        sleep 2
+    done
+
+    log_error "K3s failed to become ready"
+    exit 1
+}
+
+install_k3s_agent() {
+    log_step "Installing K3s Agent"
+
+    if command -v k3s &>/dev/null; then
+        log_error "K3s is already installed. This script only installs fresh agents."
+        log_info "To join an existing cluster on a machine with K3s, use: k3s agent"
+        exit 1
+    fi
+
+    export K3S_URL="https://${HUB_IP}:6443"
+    export K3S_TOKEN
+
+    curl -sfL https://get.k3s.io | sh -
+
+    log_info "Waiting for agent to register..."
+    sleep 10
+
+    log_success "K3s agent installed"
+}
+
+create_hub_secrets() {
+    log_step "Creating Hub Secrets"
+
+    kubectl create namespace adsblol --dry-run=client -o yaml | kubectl apply -f -
+
+    # ghcr-secret (placeholder)
+    kubectl create secret generic ghcr-secret \
+        --from-literal=.dockerconfigjson='{"auths":{"ghcr.io":{"username":"","password":""}}}' \
+        --type=kubernetes.io/dockerconfigjson \
+        -n adsblol --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+
+    # rclone secret (placeholder)
+    if ! kubectl get secret adsblol-rclone -n adsblol &>/dev/null; then
+        echo "[placeholder]" | kubectl create secret generic adsblol-rclone \
+            --from-file=rclone.conf=/dev/stdin \
+            -n adsblol --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+        log_warn "Rclone secret created with placeholder. Update with:"
+        log_info "  kubectl create secret generic adsblol-rclone --from-file=rclone.conf=<path> -n adsblol"
+    fi
+
+    # TLS secret (self-signed placeholder)
+    if ! kubectl get secret adsblol-tls -n adsblol &>/dev/null; then
+        openssl req -x509 -nodes -days 365 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+            -keyout /tmp/tls.key -out /tmp/tls.crt \
+            -subj "/CN=${BASE_DOMAIN}" 2>/dev/null
+
+        kubectl create secret tls adsblol-tls \
+            --cert=/tmp/tls.crt --key=/tmp/tls.key \
+            -n adsblol 2>/dev/null || true
+
+        rm -f /tmp/tls.crt /tmp/tls.key
+        log_warn "Self-signed TLS certificate created. Replace on FRP server with Let's Encrypt."
+    fi
+}
+
+deploy_hub_services() {
+    log_step "Deploying Hub Services"
+
+    # Install kustomize if needed
+    if ! command -v kustomize &>/dev/null; then
+        log_info "Installing kustomize..."
+        curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+        mv kustomize /usr/local/bin/
+    fi
+
+    # Deploy components in order
+    local components=("api" "redis" "mlat" "mlat-map" "haproxy" "ingest" "hub" "external" "reapi" "planes")
+
+    for component in "${components[@]}"; do
+        local manifest_dir="${MANIFEST_DIR}/default/${component}/default"
+        if [ -d "$manifest_dir" ]; then
+            log_info "Deploying ${component}..."
+            if kustomize build "$manifest_dir" 2>/dev/null | kubectl apply -f - -n adsblol 2>/dev/null; then
+                log_success "${component} deployed"
+            else
+                log_warn "Failed to deploy ${component}"
+            fi
+        fi
+    done
+}
+
+deploy_feeder_services() {
+    log_step "Deploying Feeder Services (ingest only)"
+
+    if ! command -v kustomize &>/dev/null; then
+        log_info "Installing kustomize..."
+        curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+        mv kustomize /usr/local/bin/
+    fi
+
+    # Deploy only ingest
+    local manifest_dir="${MANIFEST_DIR}/default/ingest/default"
+    if [ -d "$manifest_dir" ]; then
+        log_info "Deploying ingest..."
+        kustomize build "$manifest_dir" 2>/dev/null | kubectl apply -f - -n adsblol 2>/dev/null || {
+            log_warn "Failed to deploy ingest via kustomize, creating manually"
+            create_feeder_ingest
+        }
+    else
+        create_feeder_ingest
+    fi
+
+    # Configure ingest to forward to hub
+    log_info "Configuring ingest to forward to hub at ${HUB_IP}:30004"
+    kubectl set env deployment/ingest-readsb \
+        READSB_NET_CONNECTOR="${HUB_IP},30004,beast_out" \
+        -n adsblol 2>/dev/null || true
+}
+
+create_feeder_ingest() {
+    cat <<EOF | kubectl apply -f - -n adsblol
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingest-readsb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ingest
+  template:
+    metadata:
+      labels:
+        app: ingest
+    spec:
+      containers:
+      - name: readsb
+        image: ghcr.io/sdr-enthusiasts/docker-readsb-protobuf:latest
+        command: ["/init"]
+        env:
+        - name: TZ
+          value: "${TIMEZONE}"
+        - name: READSB_DEVICE_TYPE
+          value: "none"
+        - name: READSB_NET_INGEST_MODE
+          value: "true"
+        - name: READSB_NET_BEAST_OUTPUT_PORT
+          value: "30005"
+        - name: READSB_MAX_RANGE
+          value: "99999"
+        - name: READSB_NET_CONNECTOR
+          value: "${HUB_IP},30004,beast_out"
+        ports:
+        - containerPort: 30004
+          name: adsb-in
+        - containerPort: 30005
+          name: adsb-out
+        resources:
+          limits:
+            cpu: "500m"
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        volumeMounts:
+        - name: run
+          mountPath: /run/readsb
+      - name: serve-run-http
+        image: nginx:alpine
+        ports:
+        - containerPort: 150
+          name: json-stats
+        volumeMounts:
+        - name: run
+          mountPath: /usr/share/nginx/html
+        - name: serve-run-http-config
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: default.conf
+      volumes:
+      - name: run
+        emptyDir: {}
+      - name: serve-run-http-config
+        configMap:
+          name: serve-run-http-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingest-readsb
+spec:
+  ports:
+  - name: adsb-in
+    port: 30004
+    targetPort: 30004
+  - name: adsb-out
+    port: 30005
+    targetPort: 30005
+  - name: json-stats
+    port: 150
+    targetPort: 150
+  selector:
+    app: ingest
+EOF
+}
+
+setup_frpc_hub() {
+    if [ -z "$FRP_SERVER" ] || [ -z "$FRP_TOKEN" ]; then
+        return 0
+    fi
+
+    log_step "Setting up FRP Client (Hub)"
+
+    local arch
+    arch=$(detect_arch)
+
+    if command -v frpc &>/dev/null; then
+        log_info "frpc already installed, updating config..."
+    else
+        log_info "Downloading frpc v${FRP_VERSION}..."
+        local frp_url="https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${arch}.tar.gz"
+        wget -q "$frp_url" -O /tmp/frp.tar.gz
+        tar xzf /tmp/frp.tar.gz -C /tmp
+        cp "/tmp/frp_${FRP_VERSION}_linux_${arch}/frpc" /usr/local/bin/frpc
+        chmod +x /usr/local/bin/frpc
+        rm -rf /tmp/frp_*
+    fi
+
+    local domain_list=""
+    for sub in "${FRP_SUBDOMAINS[@]}"; do
+        domain_list+="    \"${sub}.${BASE_DOMAIN}\",
+"
+    done
+
+    cat > /etc/frpc.toml <<EOF
+serverAddr = "${FRP_SERVER}"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "${FRP_TOKEN}"
+
+[[proxies]]
+name = "web-ui"
+type = "http"
+localIP = "127.0.0.1"
+localPort = 80
+customDomains = [
+${domain_list}    "${BASE_DOMAIN}"
+]
+
+[[proxies]]
+name = "feed-beast-30005"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 30005
+remotePort = 30005
+
+[[proxies]]
+name = "feed-beast-30004"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 30004
+remotePort = 30004
+
+[[proxies]]
+name = "feed-mlat-31090"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 31090
+remotePort = 31090
+EOF
+
+    cat > /etc/systemd/system/frpc.service <<EOF
+[Unit]
+Description=FRP Client (BharatRadar Hub)
+After=network.target k3s.service
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/frpc -c /etc/frpc.toml
+Restart=always
+RestartSec=5
+User=root
+Group=root
+StandardOutput=journal
+StandardError=journal
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable frpc
+    systemctl restart frpc
+
+    sleep 3
+    if systemctl is-active --quiet frpc; then
+        log_success "FRP client started"
+    else
+        log_warn "FRP client may still be connecting. Check: journalctl -u frpc -f"
+    fi
+}
+
+save_config() {
+    local config_file="/etc/bharatradar/config.env"
+    mkdir -p /etc/bharatradar
+
+    cat > "$config_file" <<EOF
+# BharatRadar Configuration
+# Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+# Version: 1.1.0
+
+ROLE=${ROLE}
+BASE_DOMAIN=${BASE_DOMAIN}
+READSB_LAT=${READSB_LAT}
+READSB_LON=${READSB_LON}
+TIMEZONE=${TIMEZONE}
+HUB_IP=${HUB_IP:-}
+FRP_SERVER=${FRP_SERVER:-}
+K3S_TOKEN=${K3S_TOKEN:-}
+SUBDOMAINS="${SUBDOMAINS[*]}"
+EOF
+
+    chmod 600 "$config_file"
+    log_success "Configuration saved to ${config_file}"
+}
+
+cmd_create() {
+    require_root
+
+    if [ -z "$ROLE" ]; then
+        log_error "Role is required. Use --role hub or --role feeder"
+        exit 1
+    fi
+
+    if [ "$ROLE" = "feeder" ] && [ -z "$HUB_IP" ]; then
+        log_error "Hub IP is required for feeder role. Use --hub-ip <ip>"
+        exit 1
+    fi
+
+    if [ -z "$TIMEZONE" ] && command -v timedatectl &>/dev/null; then
+        TIMEZONE=$(timedatectl show --property=Timezone --value 2>/dev/null || echo "UTC")
+    fi
+
+    if [ -z "$K3S_TOKEN" ]; then
+        K3S_TOKEN=$(generate_token)
+    fi
+
+    banner
+    log_step "BharatRadar Cluster: ${ROLE^^}"
+    echo -e "  Domain:  ${CYAN}${BASE_DOMAIN}${NC}"
+    if [ "$ROLE" = "hub" ]; then
+        echo -e "  Role:    ${CYAN}Hub (runs all services)${NC}"
+        echo -e "  Lat/Lon: ${CYAN}${READSB_LAT}, ${READSB_LON}${NC}"
+        echo -e "  TZ:      ${CYAN}${TIMEZONE}${NC}"
+        if [ -n "$FRP_SERVER" ]; then
+            echo -e "  FRP:     ${CYAN}${FRP_SERVER}:7000${NC}"
+        fi
+    else
+        echo -e "  Role:    ${CYAN}Feeder (ingest only)${NC}"
+        echo -e "  Hub IP:  ${CYAN}${HUB_IP}${NC}"
+    fi
+    echo ""
+
+    if [ "$ROLE" = "hub" ]; then
+        install_k3s_server
+        create_hub_secrets
+        deploy_hub_services
+        setup_frpc_hub
+    else
+        install_k3s_server
+        deploy_feeder_services
+    fi
+
+    save_config
+    show_status
+}
+
+cmd_info() {
+    require_root
+
+    echo -e "${CYAN}================================================================${NC}"
+    echo -e "${CYAN}        BharatRadar Cluster Information${NC}"
+    echo -e "${CYAN}================================================================${NC}"
+    echo ""
+
+    if [ -f /etc/bharatradar/config.env ]; then
+        source /etc/bharatradar/config.env
+        echo -e "  ${CYAN}Configuration:${NC}"
+        echo -e "    Role:      ${ROLE}"
+        echo -e "    Domain:    ${BASE_DOMAIN}"
+        echo -e "    Hub IP:    ${HUB_IP:-local}"
+        echo ""
+    fi
+
+    if command -v k3s &>/dev/null; then
+        echo -e "  ${CYAN}K3s:${NC} $(k3s --version 2>/dev/null | head -1)"
+        echo ""
+    fi
+
+    if kubectl cluster-info &>/dev/null 2>&1; then
+        echo -e "  ${CYAN}Nodes:${NC}"
+        kubectl get nodes 2>/dev/null
+        echo ""
+
+        echo -e "  ${CYAN}Pods (adsblol namespace):${NC}"
+        kubectl get pods -n adsblol 2>/dev/null || echo "  No pods found"
+        echo ""
+    fi
+
+    if systemctl is-active --quiet frpc 2>/dev/null; then
+        echo -e "  ${CYAN}FRP Client:${NC} Active"
+    fi
+
+    echo -e "${CYAN}================================================================${NC}"
+}
+
+show_status() {
+    log_step "Cluster Status"
+    sleep 5
+
+    kubectl get pods -n adsblol 2>/dev/null || log_warn "Pods not yet ready, wait a moment and run:"
+    log_info "kubectl get pods -n adsblol"
+
+    if [ "$ROLE" = "hub" ]; then
+        echo ""
+        log_step "Access URLs"
+        echo -e "  Map:       https://map.${BASE_DOMAIN}"
+        echo -e "  MLAT Map:  https://mlat.${BASE_DOMAIN}"
+        echo -e "  API:       https://api.${BASE_DOMAIN}"
+        echo -e "  Feed:      https://feed.${BASE_DOMAIN}"
+        echo -e "  History:   https://history.${BASE_DOMAIN}"
+        echo ""
+        log_info "To add a feeder node, run on the feeder machine:"
+        echo -e "  sudo $0 create --role feeder --hub-ip $(hostname -I | awk '{print $1}')"
+    else
+        echo ""
+        log_step "Feeder Status"
+        echo -e "  Hub:       ${HUB_IP}"
+        echo -e "  Feeder is forwarding data to hub on port 30004"
+    fi
+}
+
+banner() {
+    echo ""
+    echo -e "${CYAN}================================================================${NC}"
+    echo -e "${CYAN}        BharatRadar Infrastructure v1.1.0${NC}"
+    echo -e "${CYAN}        ADS-B/MLAT Aggregator Platform${NC}"
+    echo -e "${CYAN}================================================================${NC}"
+    echo ""
+}
+
+case "$MODE" in
+    create)  cmd_create ;;
+    info)    cmd_info ;;
+    *)       log_error "Unknown command: $MODE"; usage ;;
+esac
