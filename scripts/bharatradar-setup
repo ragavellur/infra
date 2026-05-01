@@ -8,8 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="$(dirname "$SCRIPT_DIR")"
-source "${SCRIPTS_DIR}/helpers/functions.sh"
+source "${SCRIPT_DIR}/helpers/functions.sh"
 
 BANNER_TEXT="${CYAN}================================================================${NC}
 ${CYAN}        BharatRadar Infrastructure v1.1.0${NC}
@@ -116,7 +115,7 @@ if [ "$NODE_ROLE" = "hub" ]; then
     fi
 
     # Execute hub creation
-    sudo "${SCRIPTS_DIR}/bharatradar-cluster" create \
+    sudo "${SCRIPT_DIR}/bharatradar-cluster" create \
         --role hub \
         --domain "$BASE_DOMAIN" \
         --lat "$READSB_LAT" \
@@ -138,7 +137,7 @@ else
     done
 
     # Execute feeder creation
-    sudo "${SCRIPTS_DIR}/bharatradar-cluster" create \
+    sudo "${SCRIPT_DIR}/bharatradar-cluster" create \
         --role feeder \
         --hub-ip "$HUB_IP" \
         --domain "$BASE_DOMAIN" \
