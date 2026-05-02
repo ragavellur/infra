@@ -303,17 +303,15 @@ role_shared_services_install_influxdb() {
             # Fetch signing key
             curl -s "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xDA61C26A0585BD3B" | gpg --dearmor | sudo tee /usr/share/keyrings/influxdb-archive-keyring.gpg > /dev/null
 
-            # Add repo so apt-get update can fetch package list
+            # Add repo
             echo "deb [signed-by=/usr/share/keyrings/influxdb-archive-keyring.gpg] https://repos.influxdata.com/debian stable main" | sudo tee /etc/apt/sources.list.d/influxdata.list > /dev/null
 
-            export DEBIAN_FRONTEND=noninteractive
+            sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
 
-            sudo apt-get update -qq
-
-            # Remove the file we created so influxdb2 package can install its own version without conffile conflict
-            sudo rm -f /etc/apt/sources.list.d/influxdata.list
-
-            sudo apt-get install -y -o Dpkg::Options::="--force-confnew" influxdb2 || {
+            # UCF_FORCE_CONFF_NEW prevents the influxdata-archive-keyring package
+            # from showing a debconf dialog about modified influxdata.list
+            # (the package uses ucf, not dpkg, for conffile management)
+            sudo DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFF_NEW=1 apt-get install -y influxdb2 || {
                 log_warn "InfluxDB 2.x not available in repo, skipping..."
                 return 0
             }
