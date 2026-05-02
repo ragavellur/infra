@@ -306,11 +306,15 @@ role_shared_services_install_influxdb() {
             # Add repo
             echo "deb [signed-by=/usr/share/keyrings/influxdb-archive-keyring.gpg] https://repos.influxdata.com/debian stable main" | sudo tee /etc/apt/sources.list.d/influxdata.list > /dev/null
 
-            sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+            # Use noninteractive frontend to avoid dpkg config prompts
+            export DEBIAN_FRONTEND=noninteractive
 
-            # --force-confdef: accept default (maintainer version) without popup
-            # --force-confnew: always install new config file
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confnew" influxdb2 || {
+            sudo apt-get update -qq
+
+            # Pre-accept maintainer version of any conflicting config files
+            echo "influxdata-archive-keyring influxdata-archive-keyring/influxdata.list select install the package maintainer's version" | sudo debconf-set-selections
+
+            sudo apt-get install -y -o Dpkg::Options::="--force-confnew" influxdb2 || {
                 log_warn "InfluxDB 2.x not available in repo, skipping..."
                 return 0
             }
@@ -361,7 +365,7 @@ role_shared_services_save_config() {
     cat > /etc/bharatradar/db-config.env <<EOF
 # Shared Services Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.3.4
+# Version: 3.3.5
 
 ROLE=shared-services
 DB_LISTEN_IP="${DB_LISTEN_IP}"
