@@ -86,7 +86,7 @@ role_aggregator_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Aggregator Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.2.0
+# Version: 3.3.0
 
 ROLE=aggregator
 HUB_IP=${HUB_IP}

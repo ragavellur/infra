@@ -415,7 +415,7 @@ role_hub_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Primary Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.2.0
+# Version: 3.3.0
 
 ROLE=hub
 BASE_DOMAIN="${BASE_DOMAIN}"
@@ -496,6 +496,8 @@ role_hub_run() {
 
     role_hub_collect_config
     role_hub_install_k3s
+    setup_kubectl
+    install_bharatradar_cli
     role_hub_create_secrets
     role_hub_deploy_services
     role_hub_save_config

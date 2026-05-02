@@ -85,7 +85,7 @@ role_worker_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Worker Node Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.2.0
+# Version: 3.3.0
 
 ROLE=worker
 HUB_IP="${HUB_IP}"
@@ -131,6 +131,7 @@ role_worker_run() {
 
     role_worker_collect_config
     role_worker_install_k3s_agent
+    install_bharatradar_cli
     role_worker_save_config
     role_worker_post_install
 }

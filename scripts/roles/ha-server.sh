@@ -118,7 +118,7 @@ role_ha_server_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar HA Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.2.0
+# Version: 3.3.0
 
 ROLE=ha-server
 BASE_DOMAIN="${BASE_DOMAIN}"
@@ -183,6 +183,8 @@ role_ha_server_run() {
 
     role_ha_server_collect_config
     role_ha_server_install_k3s
+    setup_kubectl
+    install_bharatradar_cli
     role_ha_server_setup_keepalived
     role_ha_server_save_config
     role_ha_server_post_install

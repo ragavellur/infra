@@ -242,3 +242,46 @@ validate_pg_connstring() {
         return 1
     fi
 }
+
+# Fix kubeconfig permissions and symlink to ~/.kube/config
+setup_kubectl() {
+    log_step "Configuring kubectl"
+
+    if [ ! -f /etc/rancher/k3s/k3s.yaml ]; then
+        log_warn "k3s.yaml not found yet, skipping kubeconfig setup"
+        return 0
+    fi
+
+    chmod 644 /etc/rancher/k3s/k3s.yaml
+
+    local target_user="${SUDO_USER:-$(logname 2>/dev/null || echo "$USER")}"
+    local target_home
+    target_home=$(eval echo "~${target_user}")
+
+    mkdir -p "${target_home}/.kube"
+    cp -f /etc/rancher/k3s/k3s.yaml "${target_home}/.kube/config"
+    chown -R "${target_user}:" "${target_home}/.kube"
+
+    log_success "kubectl configured for ${target_user}"
+}
+
+# Install bharatradar-install into PATH
+install_bharatradar_cli() {
+    log_step "Installing CLI to PATH"
+
+    if [ -z "${SCRIPT_DIR:-}" ]; then
+        log_warn "SCRIPT_DIR not set, cannot install CLI"
+        return 0
+    fi
+
+    local installer="${SCRIPT_DIR}/bharatradar-install"
+    if [ ! -f "$installer" ]; then
+        log_warn "Installer not found at ${installer}"
+        return 0
+    fi
+
+    ln -sf "$installer" /usr/local/bin/bharatradar-install
+    chmod +x "$installer"
+
+    log_success "CLI installed to /usr/local/bin/bharatradar-install"
+}
