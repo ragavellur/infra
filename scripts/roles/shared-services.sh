@@ -259,17 +259,24 @@ role_shared_services_configure_redis() {
     # Bind to LAN IP (use /c to replace entire line, not partial substitution)
     sed -i "/^bind /c\\bind 127.0.0.1 ${DB_LISTEN_IP}" "$redis_conf"
 
-    # Set password
-    if grep -q "^requirepass" "$redis_conf"; then
-        sed -i "s/^requirepass .*/requirepass ${REDIS_PASSWORD}/" "$redis_conf"
-    else
-        echo "requirepass ${REDIS_PASSWORD}" >> "$redis_conf"
-    fi
+    # Set password - always use single delimiter to avoid special char conflicts
+    # Delete ALL requirepass lines first, then append one clean entry
+    sed -i '/^requirepass /d' "$redis_conf"
+    printf '%s\n' "requirepass ${REDIS_PASSWORD}" >> "$redis_conf"
 
     # Disable protected mode for LAN access
     sed -i "s/^protected-mode yes/protected-mode no/" "$redis_conf"
 
+    # Kill any stale Redis process before restart (port may still be bound)
+    local redis_pid
+    redis_pid=$(ss -tlnp 2>/dev/null | grep ':6379' | grep -oP 'pid=\K[0-9]+' | head -1)
+    if [ -n "$redis_pid" ]; then
+        kill "$redis_pid" 2>/dev/null || true
+        sleep 1
+    fi
+
     # Restart
+    systemctl reset-failed redis-server 2>/dev/null || true
     systemctl restart redis-server 2>/dev/null || systemctl restart redis 2>/dev/null || true
     systemctl enable redis-server 2>/dev/null || systemctl enable redis 2>/dev/null || true
 
@@ -362,7 +369,7 @@ role_shared_services_save_config() {
     cat > /etc/bharatradar/db-config.env <<EOF
 # Shared Services Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.3.6
+# Version: 3.3.7
 
 ROLE=shared-services
 DB_LISTEN_IP="${DB_LISTEN_IP}"

@@ -20,7 +20,7 @@
 
 set -eo pipefail
 
-VERSION="3.3.6"
+VERSION="3.3.7"
 
 # Determine script directory
 # When piped (curl | bash), BASH_SOURCE is empty — we do a shallow clone instead
