@@ -21,7 +21,7 @@ role_aggregator_collect_config() {
 
     prompt_input "K3s join token" "" K3S_TOKEN
 
-    while [ -z "$K3S_TOKEN" ]; do
+    while [ -z "$K3S_TOKEN" ]; then
         log_error "Token cannot be empty"
         echo ""
         log_info "Get the token from your hub with:"
@@ -30,16 +30,18 @@ role_aggregator_collect_config() {
         prompt_input "K3s join token" "" K3S_TOKEN
     done
 
-    # Get domain from config if available
-    if [ -f /etc/bharatradar/config.env ]; then
-        source /etc/bharatradar/config.env
-        BASE_DOMAIN="${BASE_DOMAIN:-unknown}"
-    fi
+    # Ask for base domain (needed for status checks, config)
+    prompt_input "Base domain (from hub)" "bharat-radar.vellur.in" BASE_DOMAIN
+
+    while ! validate_domain "$BASE_DOMAIN"; do
+        log_error "Invalid domain format"
+        prompt_input "Base domain" "$BASE_DOMAIN" BASE_DOMAIN
+    done
 
     echo ""
     log_step "Configuration Summary"
     echo -e "  Hub IP:    ${CYAN}${HUB_IP}${NC}"
-    echo -e "  Domain:    ${CYAN}${BASE_DOMAIN:-unknown}${NC}"
+    echo -e "  Domain:    ${CYAN}${BASE_DOMAIN}${NC}"
     echo ""
 
     if ! prompt_confirm "Proceed with Aggregator setup?"; then
