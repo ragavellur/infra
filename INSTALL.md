@@ -1,10 +1,10 @@
-# adsblol Infrastructure - Installation Guide
+# BharatRadar Infrastructure - Installation Guide
 
-> **Version:** 1.0.0
-> **Author:** @adsblol/sre
+> **Version:** 2.0.0
 > **Last Updated:** May 2026
+> **GitHub:** https://github.com/ragavellur/infra
 
-Complete guide to deploying the adsblol ADS-B/MLAT aggregator platform with optional FRP tunneling and multi-cluster support.
+Complete guide to deploying the BharatRadar ADS-B/MLAT aggregator platform with FRP tunneling and multi-node Kubernetes cluster support.
 
 ---
 
@@ -14,221 +14,368 @@ Complete guide to deploying the adsblol ADS-B/MLAT aggregator platform with opti
 2. [Prerequisites](#prerequisites)
 3. [Quick Start](#quick-start)
 4. [Step-by-Step Installation](#step-by-step-installation)
-   - [Option A: All-in-One (Raspberry Pi Only)](#option-a-all-in-one-raspberry-pi-only)
-   - [Option B: With FRP Tunneling (Recommended)](#option-b-with-frp-tunneling-recommended)
-5. [FRP Server Setup (AWS/Cloud)](#frp-server-setup-awscloud)
-6. [FRP Client Setup (Raspberry Pi)](#frp-client-setup-raspberry-pi)
-7. [SSL/TLS Configuration](#ssltls-configuration)
-8. [Cluster Management](#cluster-management)
-9. [Configuration Reference](#configuration-reference)
-10. [Troubleshooting](#troubleshooting)
-11. [Useful Commands](#useful-commands)
+5. [Custom Docker Images](#custom-docker-images)
+6. [FRP Server Setup (AWS/Cloud)](#frp-server-setup-awscloud)
+7. [FRP Client Setup (Hub Node)](#frp-client-setup-hub-node)
+8. [Feeder Pi Setup](#feeder-pi-setup)
+9. [SSL/TLS Configuration](#ssltls-configuration)
+10. [Cluster Management](#cluster-management)
+11. [Configuration Reference](#configuration-reference)
+12. [Troubleshooting](#troubleshooting)
+13. [Useful Commands](#useful-commands)
 
 ---
 
 ## Architecture Overview
 
 ```
-                    Cloudflare (DNS + CDN)
+                    Cloudflare (DNS only)
                             |
                             v
-                    AWS EC2 (frps + nginx)
-                            |
-                    frp tunnel (HTTP + TCP)
-                            |
-                            v
-               Raspberry Pi (K3s + frpc)
-                /      |      |      \
-          ingest    hub    planes   mlat
-           |         |       |        |
-           +---------+-------+--------+
-                     |
-                   reapi
-                     |
-                   api
+                    AWS EC2 frps + nginx
+                 (feed.bharat-radar.vellur.in)
+                    /            |            \
+            port 30004    port 31090    HTTP/HTTPS tunnels
+                   |             |              |
+                   v             v              v
+         ┌─────────────────────────────────────────────┐
+         │       HUB (Ubuntu i7, K3s server)           │
+         │       192.168.200.145                       │
+         │                                             │
+         │  ingest  hub  planes  api  mlat  mlat-map   │
+         │  haproxy(3x)  redis  external  reapi        │
+         └──────────────┬──────────────────────────────┘
+                        │ k3s join
+                        v
+         ┌─────────────────────────────┐
+         │  BR-AGGRIGATOR (Pi, agent)  │
+         │  192.168.200.187            │
+         │  Failover node              │
+         └─────────────────────────────┘
+
+    FEEDER PI (not K3s)
+    192.168.200.127
+    readsb → feed.bharat-radar.vellur.in:30004
+    mlat-client → feed.bharat-radar.vellur.in:31090
 ```
+
+### Nodes
+
+| Node | IP | Role | OS | Arch | K3s |
+|------|----|------|----|------|-----|
+| **Hub** | 192.168.200.145 | K3s server, all services | Ubuntu 24.04 | amd64 | Yes |
+| **br-aggrigator** | 192.168.200.187 | K3s agent, failover | Debian 12 (Pi) | arm64 | Yes |
+| **Feeder Pi** | 192.168.200.127 | RTL-SDR + readsb + mlat-client | Raspberry Pi OS | arm64 | No |
 
 ### Components
 
-| Component | Description | Port |
-|-----------|-------------|------|
-| **K3s** | Lightweight Kubernetes | 6443 |
-| **ingest-readsb** | Public ADS-B ingest | 30004, 30005 |
-| **hub-readsb** | Aggregation layer | 30004 |
-| **planes-readsb** | Public map (tar1090) | 80, 30152 |
-| **mlat-mlat-server** | MLAT processing | 31090, 30104 |
-| **reapi-readsb** | REST API data | 30006, 32006 |
-| **api** | Main web API | 8080 |
-| **mlat-map** | MLAT sync UI | 80 |
-| **haproxy** | Load balancer | 80, 443 |
-| **redis** | Cache | 6379 |
+| Component | Image | Port | Notes |
+|-----------|-------|------|-------|
+| **ingest-readsb** | `ghcr.io/bharatradar/readsb` | 30004, 30005 | Receives data from feeders via FRP |
+| **hub-readsb** | `ghcr.io/bharatradar/readsb` | 30004 | Aggregates ingest data |
+| **planes-readsb** | `ghcr.io/bharatradar/docker-tar1090-uuid` | 80, 30152 | Public tar1090 map with UUID tracking |
+| **mlat-mlat-server** | `ghcr.io/bharatradar/mlat-server` | 31090, 30104 | MLAT processing |
+| **mlat-map** | `ghcr.io/bharatradar/mlat-server-sync-map` | 80 | MLAT coverage map |
+| **reapi-readsb** | `ghcr.io/bharatradar/readsb` | 30006 | REST API data feed |
+| **external-readsb** | `ghcr.io/bharatradar/readsb` | 30004 | External feeds (cnvr.io) |
+| **api** | `ghcr.io/bharatradar/api` | 8080 | Main web API |
+| **history** | `ghcr.io/bharatradar/history` | 8080, 80 | Historical data (amd64 only) |
+| **haproxy** | `haproxy:2.7` | 80, 443 | Load balancer (3 replicas) |
+| **redis** | `redis:alpine` | 6379 | Cache |
 
 ---
 
 ## Prerequisites
 
-### Raspberry Pi (Edge Node)
+### Hub Node (K3s Server)
 
-- Raspberry Pi 4 (4GB+ RAM recommended)
-- Raspberry Pi OS (64-bit) or Debian/Ubuntu
-- RTL-SDR dongle (optional, for direct receiver)
+- Ubuntu 22.04+ or Debian 12+ (Core i7, VM, or powerful Pi)
+- 4GB+ RAM, 50GB+ disk
 - Static IP on local network
-- Ports 80, 30004, 30005, 31090 accessible
+- Root/sudo access
 
-### AWS/Cloud Server (FRP Server - Optional)
+### Aggregator Node (K3s Agent - Optional)
+
+- Raspberry Pi 4+ with 4GB+ RAM
+- Raspberry Pi OS (64-bit) or Debian 12+
+- Static IP on local network
+- Used for failover - all custom images support arm64
+
+### Feeder Pi (RTL-SDR Receiver)
+
+- Raspberry Pi with RTL-SDR dongle
+- Raspberry Pi OS
+- readsb + tar1090 + mlat-client installed
+- Connects to `feed.bharat-radar.vellur.in:30004` directly (no FRP client needed)
+
+### AWS/Cloud Server (FRP Server)
 
 - Any cloud VPS (AWS EC2, DigitalOcean, etc.)
 - Ubuntu 22.04+ or Debian 12+
 - Public IP address
-- Ports 7000, 80, 443, 30004, 30005, 31090 open
+- Ports 7000, 80, 443, 30004, 31090 open in security group
 
 ### DNS Setup
 
-- Domain registered with DNS provider (Cloudflare recommended)
-- DNS records pointing to FRP server IP (if using FRP)
+- Domain with Cloudflare (or any DNS provider)
+- DNS records pointing to FRP server IP
+
+### Docker Build Machine
+
+- Machine with Docker + buildx installed
+- GitHub PAT with `packages:write` scope for pushing to GHCR
+- Used to build custom multi-arch images
 
 ---
 
 ## Quick Start
 
-### Option A: All-in-One (Raspberry Pi Only)
-
-If you only need local access (no public internet exposure):
+### 1. Build Custom Images
 
 ```bash
-# Clone the repository
 git clone https://github.com/ragavellur/infra.git
 cd infra
 
-# Run the main installer
-sudo scripts/install/infra-setup.sh \
-  --domain bharat-radar.vellur.in \
-  --lat 18.480718 \
-  --lon 73.898235
+# Build and push all images (multi-arch)
+for img in readsb docker-tar1090-uuid mlat-server mlat-server-sync-map api; do
+  docker buildx build --push --platform linux/amd64,linux/arm64 \
+    -t ghcr.io/bharatradar/$img:latest build/$img/
+done
 ```
 
-### Option B: With FRP Tunneling (Recommended)
-
-For public access through a cloud server:
-
-```
-1. Set up FRP server on AWS → scripts/frp/setup-frps.sh
-2. Set up FRP client on Pi  → scripts/frp/setup-frpc.sh
-3. Configure SSL             → scripts/install/setup-nginx-ssl.sh
-4. Deploy infrastructure     → scripts/cluster/manage-cluster.sh deploy
-```
-
-See [Step-by-Step Installation](#step-by-step-installation) for detailed instructions.
-
----
-
-## Step-by-Step Installation
-
-### Option A: All-in-One (Raspberry Pi Only)
-
-This installs everything on a single Raspberry Pi. The platform will be accessible on the local network.
+### 2. Set up Hub Node
 
 ```bash
-# 1. Clone repository
-git clone https://github.com/ragavellur/infra.git
+# On Hub (Ubuntu i7):
+# Install K3s
+curl -sfL https://get.k3s.io | sh -
+
+# Create namespace and secrets
+kubectl create ns bharatradar
+kubectl create secret docker-registry ghcr-secret \
+  --docker-server=ghcr.io \
+  --docker-username=YOUR_GH_USERNAME \
+  --docker-password=YOUR_GH_PAT \
+  -n bharatradar
+
+# Deploy
 cd infra
-
-# 2. Run interactive installer
-sudo scripts/install/infra-setup.sh
-
-# Or with parameters:
-sudo scripts/install/infra-setup.sh \
-  --domain bharat-radar.vellur.in \
-  --lat 18.480718 \
-  --lon 73.898235 \
-  --timezone Asia/Kolkata
+kustomize build manifests/default | kubectl apply -f -
 ```
 
-The installer will:
-1. Install system dependencies
-2. Install K3s (lightweight Kubernetes)
-3. Create Kubernetes namespace and secrets
-4. Deploy all ADS-B/MLAT services
-5. Save configuration to `/etc/adsblol/config.env`
-
-### Option B: With FRP Tunneling (Recommended)
-
-This provides public internet access through an AWS/cloud server with SSL.
-
-#### Step 1: Set up DNS
-
-In Cloudflare (or your DNS provider), create A records pointing to your AWS server IP:
-
-```
-Type    Name                        Value
-A       bharat-radar.vellur.in      13.48.249.103
-A       map.bharat-radar.vellur.in  13.48.249.103
-A       history.bharat-radar.vellur.in  13.48.249.103
-A       mlat.bharat-radar.vellur.in  13.48.249.103
-A       api.bharat-radar.vellur.in  13.48.249.103
-A       feed.bharat-radar.vellur.in  13.48.249.103
-A       ws.bharat-radar.vellur.in   13.48.249.103
-```
-
-> **Note:** Set proxy status to **DNS Only** (grey cloud) initially. The FRP server handles SSL.
-
-#### Step 2: Set up FRP Server on AWS
-
-See [FRP Server Setup](#frp-server-setup-awscloud) below.
-
-#### Step 3: Set up FRP Client on Raspberry Pi
-
-See [FRP Client Setup](#frp-client-setup-raspberry-pi) below.
-
-#### Step 4: Deploy Infrastructure
+### 3. Set up FRP Server (AWS)
 
 ```bash
-# On Raspberry Pi:
-cd infra
-sudo scripts/cluster/manage-cluster.sh deploy --domain bharat-radar.vellur.in
-```
-
----
-
-## FRP Server Setup (AWS/Cloud)
-
-The FRP server runs on your cloud machine and acts as a reverse proxy, forwarding traffic to your Raspberry Pi.
-
-### Prerequisites
-
-- Ubuntu/Debian cloud server
-- Public IP
-- DNS records pointing to this IP
-
-### Setup
-
-```bash
-# On AWS server:
-git clone https://github.com/ragavellur/infra.git
-cd infra
-
-# Interactive setup
-sudo scripts/frp/setup-frps.sh
-
-# Or automated:
+# On AWS server
 sudo scripts/frp/setup-frps.sh \
   --domain bharat-radar.vellur.in \
   --frp-token "your-secret-token" \
   --email admin@example.com
 ```
 
-This will:
-1. Install FRP server (frps)
-2. Configure frps.toml with auth and ports
-3. Create systemd service for frps
-4. Install nginx as reverse proxy
-5. Configure nginx to proxy to FRP vhost port
-6. Obtain Let's Encrypt SSL certificates for all subdomains
-7. Set up automatic certificate renewal
+### 4. Set up FRP Client (Hub)
+
+```bash
+# On Hub
+sudo scripts/frp/setup-frpc.sh \
+  --server 13.48.249.103 \
+  --token "your-secret-token" \
+  --domain bharat-radar.vellur.in
+```
+
+### 5. Join Aggregator Node (Optional)
+
+```bash
+# Get join token from Hub
+TOKEN=$(sudo cat /var/lib/rancher/k3s/server/node-token)
+
+# On aggregator Pi
+curl -sfL https://get.k3s.io | \
+  K3S_URL=https://HUB_IP:6443 \
+  K3S_TOKEN=$TOKEN \
+  sh -
+```
+
+---
+
+## Step-by-Step Installation
+
+### Step 1: DNS Setup
+
+Create A records in Cloudflare (set to **DNS Only**, grey cloud):
+
+```
+Type    Name                        Value
+A       bharat-radar.vellur.in      <AWS_IP>
+A       map.bharat-radar.vellur.in  <AWS_IP>
+A       history.bharat-radar.vellur.in  <AWS_IP>
+A       mlat.bharat-radar.vellur.in  <AWS_IP>
+A       feed.bharat-radar.vellur.in  <AWS_IP>
+```
+
+### Step 2: Build and Push Custom Images
+
+All upstream images are mirrored to `ghcr.io/bharatradar/` with multi-arch support:
+
+| Image | Source | Build Dir |
+|-------|--------|-----------|
+| `ghcr.io/bharatradar/readsb` | `ghcr.io/wiedehopf/readsb` | `build/readsb/` |
+| `ghcr.io/bharatradar/docker-tar1090-uuid` | `ghcr.io/sdr-enthusiasts/docker-tar1090` + uuid binaries | `build/docker-tar1090-uuid/` |
+| `ghcr.io/bharatradar/mlat-server` | `ghcr.io/adsblol/mlat-server` | `build/mlat-server/` |
+| `ghcr.io/bharatradar/mlat-server-sync-map` | `ghcr.io/adsblol/mlat-server-sync-map` + nginx proxy | `build/mlat-server-sync-map/` |
+| `ghcr.io/bharatradar/api` | `ghcr.io/adsblol/api` | `build/api/` |
+| `ghcr.io/bharatradar/history` | `ghcr.io/adsblol/history` | `build/history/` (amd64 only) |
+
+```bash
+# Authenticate with GHCR
+echo $GH_PAT | docker login ghcr.io -u YOUR_GH_USERNAME --password-stdin
+
+# Build single image
+docker buildx build --push --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/bharatradar/readsb:latest build/readsb/
+
+# Or build all at once (see Quick Start above)
+```
+
+> **Note:** `history` image is amd64 only (upstream doesn't provide arm64). The manifest includes `nodeSelector: kubernetes.io/arch: amd64` to ensure it only schedules on amd64 nodes.
+
+### Step 3: Set up Hub Node (K3s Server)
+
+```bash
+# Install K3s
+curl -sfL https://get.k3s.io | sh -
+
+# Verify
+sudo kubectl get nodes
+sudo kubectl get pods -A
+```
+
+### Step 4: Create Namespace and Secrets
+
+```bash
+# Create namespace
+sudo kubectl create ns bharatradar
+
+# Create GHCR pull secret
+sudo kubectl create secret docker-registry ghcr-secret \
+  --docker-server=ghcr.io \
+  --docker-username=YOUR_GH_USERNAME \
+  --docker-password=YOUR_GH_PAT \
+  -n bharatradar
+
+# Create rclone secret (optional, for history)
+echo -e "[adsblol]\ntype = s3\nprovider = AWS\nenv_auth = true" | \
+  sudo kubectl create secret generic adsblol-rclone \
+  --from-file=rclone.conf=/dev/stdin -n bharatradar
+```
+
+### Step 5: Deploy Infrastructure
+
+```bash
+cd /path/to/infra
+
+# Preview manifests
+kustomize build manifests/default
+
+# Apply
+kustomize build manifests/default | sudo kubectl apply -f -
+
+# Verify
+sudo kubectl get pods -n bharatradar
+```
+
+### Step 6: Set up FRP Server (AWS)
+
+See [FRP Server Setup](#frp-server-setup-awscloud) below.
+
+### Step 7: Set up FRP Client (Hub)
+
+See [FRP Client Setup](#frp-client-setup-hub-node) below.
+
+### Step 8: Join Aggregator Node (Optional)
+
+```bash
+# On Hub - get join token
+sudo cat /var/lib/rancher/k3s/server/node-token
+
+# On aggregator Pi
+curl -sfL https://get.k3s.io | \
+  K3S_URL=https://192.168.200.145:6443 \
+  K3S_TOKEN=K10xxxxxxxxx \
+  sh -
+
+# Verify on Hub
+sudo kubectl get nodes -o wide
+```
+
+### Step 9: Set up Feeder Pi
+
+See [Feeder Pi Setup](#feeder-pi-setup) below.
+
+---
+
+## Custom Docker Images
+
+### Building
+
+All custom images are defined in the `build/` directory. Each contains a Dockerfile that pulls the upstream image and optionally adds customizations.
+
+```bash
+# Single arch (faster)
+docker buildx build --push -t ghcr.io/bharatradar/readsb:latest build/readsb/
+
+# Multi-arch (for Pi compatibility)
+docker buildx build --push --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/bharatradar/readsb:latest build/readsb/
+```
+
+### Image Matrix
+
+| Custom Image | Upstream | Customizations | Archs |
+|-------------|----------|----------------|-------|
+| `readsb` | `ghcr.io/wiedehopf/readsb` | None (re-tag) | amd64, arm64 |
+| `docker-tar1090-uuid` | `ghcr.io/sdr-enthusiasts/docker-tar1090` | Adds `readsb-with-uuids` binary, enables `rId` in aircraft.json | amd64, arm64 |
+| `mlat-server` | `ghcr.io/adsblol/mlat-server` | None (re-tag) | amd64, arm64 |
+| `mlat-server-sync-map` | `ghcr.io/adsblol/mlat-server-sync-map` | Adds redirect index.html, nginx reverse proxy for `/api/0/mlat-server/` | amd64, arm64 |
+| `api` | `ghcr.io/adsblol/api` | None (re-tag) | amd64, arm64 |
+| `history` | `ghcr.io/adsblol/history` | None (re-tag) | amd64 only |
+
+### CI/CD
+
+The `.github/workflows/build-image.yml` workflow builds all images on push:
+
+```yaml
+# Trigger: push to main or manual dispatch
+# Platforms: linux/amd64, linux/arm64
+# Registry: ghcr.io/bharatradar/
+```
+
+---
+
+## FRP Server Setup (AWS/Cloud)
+
+The FRP server runs on your cloud machine and tunnels traffic to the Hub's Kubernetes services.
+
+### Prerequisites
+
+- Ubuntu/Debian cloud server
+- Public IP
+- DNS records pointing to this IP
+- Ports open: 7000 (FRP control), 80/443 (HTTP/HTTPS), 30004 (beast input), 31090 (MLAT)
+
+### Automated Setup
+
+```bash
+git clone https://github.com/ragavellur/infra.git
+cd infra
+
+sudo scripts/frp/setup-frps.sh \
+  --domain bharat-radar.vellur.in \
+  --frp-token "your-secret-token" \
+  --email admin@example.com
+```
 
 ### Manual Setup
-
-If you prefer manual configuration:
 
 ```bash
 # 1. Download frps
@@ -241,20 +388,16 @@ sudo cp "frp_${FRP_VERSION}_linux_${ARCH}/frps" /usr/local/bin/
 sudo tee /etc/frps.toml << 'EOF'
 bindPort = 7000
 vhostHTTPPort = 8080
+vhostHTTPSPort = 8443
 
 auth.method = "token"
 auth.token = "YOUR_SECRET_TOKEN"
-
-webServer.addr = "0.0.0.0"
-webServer.port = 7500
-webServer.user = "admin"
-webServer.password = "YOUR_DASHBOARD_PASSWORD"
 EOF
 
 # 3. Create systemd service
 sudo tee /etc/systemd/system/frps.service << 'EOF'
 [Unit]
-Description=FRP Server (adsblol)
+Description=FRP Server (BharatRadar)
 After=network.target
 
 [Service]
@@ -262,53 +405,43 @@ Type=simple
 ExecStart=/usr/local/bin/frps -c /etc/frps.toml
 Restart=always
 RestartSec=5
-LimitNOFILE=1048576
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# 4. Enable and start
 sudo systemctl daemon-reload
 sudo systemctl enable frps
 sudo systemctl start frps
-
-# 5. Continue with nginx + SSL setup
-sudo scripts/install/setup-nginx-ssl.sh --domain bharat-radar.vellur.in --email admin@example.com
 ```
+
+### FRP Server Proxies
+
+The AWS FRP server exposes these ports:
+
+| Proxy Name | Type | Remote Port | Forwards To |
+|-----------|------|-------------|-------------|
+| `feed-beast-30004` | TCP | 30004 | Hub ingest-readsb:30004 |
+| `feed-mlat-31090` | TCP | 31090 | Hub mlat-mlat-server:31090 |
+| `web-http` | HTTP | 80 | Hub Traefik (port 80) |
+| `web-https` | HTTPS | 443 | Hub Traefik (port 443) |
 
 ---
 
-## FRP Client Setup (Raspberry Pi)
+## FRP Client Setup (Hub Node)
 
-The FRP client runs on your Raspberry Pi and creates a secure tunnel to the FRP server.
+The FRP client runs on the Hub and creates tunnels for web traffic and feeder data.
 
-### Prerequisites
-
-- K3s installed (via `infra-setup.sh` or manually)
-- FRP server already running on AWS
-
-### Setup
+### Automated Setup
 
 ```bash
-# On Raspberry Pi:
 cd infra
 
-# Interactive setup
-sudo scripts/frp/setup-frpc.sh
-
-# Or automated:
 sudo scripts/frp/setup-frpc.sh \
   --server 13.48.249.103 \
   --token "your-secret-token" \
   --domain bharat-radar.vellur.in
 ```
-
-This will:
-1. Download and install frpc
-2. Generate frpc.toml with all proxy configurations
-3. Create systemd service
-4. Start and verify the connection
 
 ### Manual Setup
 
@@ -319,76 +452,197 @@ ARCH=$(uname -m)
 curl -L "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${ARCH}.tar.gz" | tar xz
 sudo cp "frp_${FRP_VERSION}_linux_${ARCH}/frpc" /usr/local/bin/
 
-# 2. Configure frpc
-sudo tee /etc/frpc.toml << EOF
+# 2. Configure frpc (update IPs to match your cluster)
+sudo tee /etc/frpc.toml << 'EOF'
 serverAddr = "13.48.249.103"
 serverPort = 7000
+log.level = "info"
 
 auth.method = "token"
 auth.token = "YOUR_SECRET_TOKEN"
 
 [[proxies]]
-name = "web-ui"
-type = "http"
-localIP = "127.0.0.1"
-localPort = 80
-customDomains = [
-    "bharat-radar.vellur.in",
-    "map.bharat-radar.vellur.in",
-    "history.bharat-radar.vellur.in",
-    "mlat.bharat-radar.vellur.in",
-    "api.bharat-radar.vellur.in",
-    "feed.bharat-radar.vellur.in",
-    "ws.bharat-radar.vellur.in"
-]
-
-[[proxies]]
-name = "feed-beast-30005"
-type = "tcp"
-localIP = "127.0.0.1"
-localPort = 30005
-remotePort = 30005
-
-[[proxies]]
 name = "feed-beast-30004"
 type = "tcp"
-localIP = "127.0.0.1"
+localIP = "INGEST_READSB_CLUSTER_IP"
 localPort = 30004
 remotePort = 30004
 
 [[proxies]]
+name = "feed-beast-30005"
+type = "tcp"
+localIP = "INGEST_READSB_CLUSTER_IP"
+localPort = 30005
+remotePort = 30005
+
+[[proxies]]
 name = "feed-mlat-31090"
 type = "tcp"
-localIP = "127.0.0.1"
+localIP = "MLAT_SERVER_CLUSTER_IP"
 localPort = 31090
 remotePort = 31090
+
+[[proxies]]
+name = "web-http"
+type = "http"
+localIP = "TRAEFIK_LB_IP"
+localPort = 80
+customDomains = ["map.bharat-radar.vellur.in", "bharat-radar.vellur.in"]
+
+[[proxies]]
+name = "web-https"
+type = "https"
+localIP = "TRAEFIK_LB_IP"
+localPort = 443
+customDomains = ["map.bharat-radar.vellur.in", "bharat-radar.vellur.in"]
+
+[[proxies]]
+name = "mlat-map"
+type = "http"
+localIP = "MLAT_MAP_CLUSTER_IP"
+localPort = 80
+customDomains = ["mlat.bharat-radar.vellur.in"]
 EOF
+
+# Get cluster IPs:
+# sudo kubectl get svc -n bharatradar
 
 # 3. Create systemd service
 sudo tee /etc/systemd/system/frpc.service << 'EOF'
 [Unit]
-Description=FRP Client (adsblol)
+Description=FRP Client (BharatRadar Hub)
 After=network.target
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/frpc -c /etc/frpc.toml
 Restart=always
-RestartSec=5
-LimitNOFILE=1048576
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# 4. Enable and start
 sudo systemctl daemon-reload
 sudo systemctl enable frpc
 sudo systemctl start frpc
 
-# 5. Check status
+# 4. Verify
 sudo systemctl status frpc
 journalctl -u frpc -f
+```
+
+### FRP Client Proxies
+
+| Proxy Name | Local Target | Remote | Purpose |
+|-----------|-------------|--------|---------|
+| `feed-beast-30004` | ingest-readsb:30004 | AWS:30004 | Feeder data input |
+| `feed-beast-30005` | ingest-readsb:30005 | AWS:30005 | Feeder data output |
+| `feed-mlat-31090` | mlat-mlat-server:31090 | AWS:31090 | MLAT client input |
+| `web-http` | Traefik LB:80 | AWS:80 (HTTP) | Map/API HTTP |
+| `web-https` | Traefik LB:443 | AWS:443 (HTTPS) | Map/API HTTPS |
+| `mlat-map` | mlat-map:80 | AWS (HTTP vhost) | MLAT coverage map |
+
+---
+
+## Feeder Pi Setup
+
+The Feeder Pi runs readsb + mlat-client and sends data to the FRP server. It is **not** part of the Kubernetes cluster.
+
+### Prerequisites
+
+- Raspberry Pi with RTL-SDR dongle
+- Raspberry Pi OS installed
+- readsb + tar1090 already installed (e.g., via Wiedehopf's scripts)
+
+### readsb Configuration
+
+Edit `/etc/default/readsb`:
+
+```bash
+RECEIVER_OPTIONS="--device 0 --device-type rtlsdr --gain auto --ppm 0 --dcfilter --enable-biastee --uuid-file /etc/bharat-radar-id --preamble-threshold 58"
+DECODER_OPTIONS="--lat 18.480718 --lon 73.898235 --max-range 450 --fix"
+NET_OPTIONS="--net --net-ingest --net-receiver-id --net-ri-port 30001 --net-ro-port 30002 --net-sbs-port 30003 --net-bi-port 30004,30104,31008,30105 --net-bo-port 30005 --net-beast-reduce-interval 0.5"
+JSON_OPTIONS="--json-location-accuracy 2"
+ADAPTIVE_DYNAMIC_RANGE=yes
+```
+
+Restart readsb:
+
+```bash
+sudo systemctl restart readsb
+```
+
+### MLAT Feeder Bridge
+
+This sends beast output from local readsb to the FRP server:
+
+```bash
+sudo tee /etc/systemd/system/bharat-feeder.service << 'EOF'
+[Unit]
+Description=Bharat Radar Beast Feeder Bridge
+After=network.target readsb.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/readsb --net-only --uuid-file /etc/bharat-radar-id \
+  --net-connector 127.0.0.1,30005,beast_in \
+  --net-connector feed.bharat-radar.vellur.in,30004,beast_reduce_plus_out
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable bharat-feeder
+sudo systemctl start bharat-feeder
+```
+
+### MLAT Client
+
+```bash
+sudo tee /etc/systemd/system/bharat-mlat.service << 'EOF'
+[Unit]
+Description=Bharat Radar MLAT Client
+After=network.target readsb.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/mlat-client \
+  --input-type beast \
+  --input-connect 127.0.0.1:30005 \
+  --server feed.bharat-radar.vellur.in:31090 \
+  --user BR-YOUR_UUID_HERE \
+  --lat 18.480718 \
+  --lon 73.898235 \
+  --alt 630 \
+  --results beast,connect,127.0.0.1:30105
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable bharat-mlat
+sudo systemctl start bharat-mlat
+```
+
+### Verify Feeder
+
+```bash
+# Check readsb is receiving
+sudo journalctl -u readsb --since "1 min ago" | grep -i "hex:"
+
+# Check feeder is connected
+sudo journalctl -u bharat-feeder --since "1 min ago"
+
+# Check MLAT client
+sudo journalctl -u bharat-mlat --since "1 min ago"
+sudo systemctl status bharat-feeder bharat-mlat
 ```
 
 ---
@@ -407,25 +661,18 @@ sudo scripts/install/setup-nginx-ssl.sh \
 
 ### Cloudflare Edge Certificates
 
-If using Cloudflare proxy (orange cloud), you need either:
-1. **Flexible SSL mode** - Cloudflare handles HTTPS, connects to origin via HTTP
-2. **Full SSL mode** - Requires valid certificate on origin server
-3. **Advanced Certificate Manager** - For wildcard certificates on free tier
+If using Cloudflare proxy (orange cloud):
+1. **Flexible SSL** - Cloudflare handles HTTPS, connects via HTTP
+2. **Full SSL** - Requires valid certificate on origin server
+3. **DNS-only mode** - Recommended with origin SSL for immediate coverage
 
-> **Note:** On free Cloudflare plans, Edge Certificates may not cover all subdomains immediately. Use DNS-only mode with origin SSL for immediate coverage.
+> **Note:** On free Cloudflare plans, use DNS-only mode. The FRP server handles SSL via Let's Encrypt.
 
 ### Certificate Auto-Renewal
 
-Let's Encrypt certificates auto-renew via certbot timer:
-
 ```bash
-# Check timer status
 sudo systemctl status certbot.timer
-
-# Test renewal
 sudo certbot renew --dry-run
-
-# View certificates
 sudo certbot certificates
 ```
 
@@ -433,34 +680,60 @@ sudo certbot certificates
 
 ## Cluster Management
 
-### Create a New Cluster
-
-```bash
-sudo scripts/cluster/manage-cluster.sh create \
-  --domain bharat-radar.vellur.in \
-  --lat 18.480718 \
-  --lon 73.898235
-```
-
-### Join an Existing Cluster
-
-```bash
-sudo scripts/cluster/manage-cluster.sh join \
-  --server 192.168.1.100 \
-  --token "your-k3s-token"
-```
-
 ### Deploy Infrastructure
 
 ```bash
-sudo scripts/cluster/manage-cluster.sh deploy \
-  --domain bharat-radar.vellur.in
+cd infra
+kustomize build manifests/default | kubectl apply -f -
+```
+
+### Join an Aggregator Node
+
+```bash
+# Get token from Hub
+sudo cat /var/lib/rancher/k3s/server/node-token
+
+# On aggregator Pi
+curl -sfL https://get.k3s.io | \
+  K3S_URL=https://HUB_IP:6443 \
+  K3S_TOKEN=$TOKEN \
+  sh -
 ```
 
 ### View Cluster Info
 
 ```bash
-sudo scripts/cluster/manage-cluster.sh info
+kubectl get nodes -o wide
+kubectl get pods -n bharatradar -o wide
+kubectl top nodes
+kubectl top pods -n bharatradar
+```
+
+### Failover Test
+
+```bash
+# Cordon Hub to force pods onto aggregator
+kubectl cordon bharat-radar
+
+# Delete pods to trigger rescheduling
+kubectl delete pod -n bharatradar -l app=ingest
+kubectl delete pod -n bharatradar -l app=hub
+
+# Verify pods are on aggregator
+kubectl get pods -n bharatradar -o wide
+
+# Uncordon Hub when done
+kubectl uncordon bharat-radar
+```
+
+### Update Images
+
+```bash
+# Pull latest images on all nodes
+sudo k3s crictl pull ghcr.io/bharatradar/readsb:latest
+
+# Restart deployments
+kubectl rollout restart deployment -n bharatradar
 ```
 
 ---
@@ -472,33 +745,48 @@ sudo scripts/cluster/manage-cluster.sh info
 | File | Location | Description |
 |------|----------|-------------|
 | K3s config | `/etc/rancher/k3s/k3s.yaml` | Kubernetes admin config |
-| FRP server | `/etc/frps.toml` | FRP server configuration |
-| FRP client | `/etc/frpc.toml` | FRP client configuration |
-| Nginx HTTP | `/etc/nginx/sites-available/adsblol-http` | HTTP server block |
-| Nginx SSL | `/etc/nginx/sites-available/adsblol-ssl` | HTTPS server block |
-| Platform config | `/etc/adsblol/config.env` | Generated platform config |
+| K3s server token | `/var/lib/rancher/k3s/server/node-token` | Token for joining nodes |
+| FRP server | `/etc/frps.toml` | FRP server configuration (AWS) |
+| FRP client | `/etc/frpc.toml` | FRP client configuration (Hub) |
+| Platform config | `/etc/bharatradar/config.env` | Generated platform config |
+
+### Kubernetes Namespace
+
+All resources are in the `bharatradar` namespace.
+
+### imagePullSecrets
+
+All deployments that pull from GHCR include:
+
+```yaml
+imagePullSecrets:
+- name: ghcr-secret
+```
+
+### Node Selectors
+
+| Deployment | Selector | Reason |
+|-----------|----------|--------|
+| `history` | `kubernetes.io/arch: amd64` | Upstream image is amd64 only |
 
 ### Environment Variables
 
-```bash
-# /etc/adsblol/config.env
-BASE_DOMAIN=bharat-radar.vellur.in
-READSB_LAT=18.480718
-READSB_LON=73.898235
-TIMEZONE=Asia/Kolkata
-K3S_TOKEN=your-k3s-token
-```
+| Variable | Location | Description |
+|----------|----------|-------------|
+| `BASE_DOMAIN` | `/etc/bharatradar/config.env` | `bharat-radar.vellur.in` |
+| `READSB_LAT` | `/etc/bharatradar/config.env` | Receiver latitude |
+| `READSB_LON` | `/etc/bharatradar/config.env` | Receiver longitude |
+| `TIMEZONE` | `/etc/bharatradar/config.env` | `Asia/Kolkata` |
 
 ### Subdomains
 
 | Subdomain | Service | Description |
 |-----------|---------|-------------|
 | `map.*` | planes-readsb | tar1090 map interface |
-| `mlat.*` | mlat-map | MLAT sync visualization |
+| `mlat.*` | mlat-map | MLAT coverage visualization |
 | `history.*` | history | Historical flight data |
-| `api.*` | api | REST API |
-| `feed.*` | ingest | ADS-B feed endpoint |
-| `ws.*` | api | WebSocket connections |
+| `api.*` / `*` (root) | api | Main web API |
+| `feed.*` | AWS FRP server | Feeder endpoint (ports 30004, 31090) |
 
 ---
 
@@ -520,52 +808,66 @@ sudo k3s-uninstall.sh
 ### FRP Issues
 
 ```bash
-# Check FRP client
+# Check FRP client (on Hub)
 sudo systemctl status frpc
 journalctl -u frpc -f
 
-# Check FRP server
+# Check FRP server (on AWS)
 sudo systemctl status frps
 journalctl -u frps -f
 
-# Test FRP dashboard
-curl http://localhost:7500
+# Test connectivity from Feeder Pi
+nc -zv feed.bharat-radar.vellur.in 30004
+nc -zv feed.bharat-radar.vellur.in 31090
 ```
 
 ### Pod Issues
 
 ```bash
 # View all pods
-kubectl get pods -n adsblol
+kubectl get pods -n bharatradar
 
 # View pod logs
-kubectl logs -n adsblol <pod-name>
+kubectl logs -n bharatradar <pod-name>
 
 # Describe pod for events
-kubectl describe pod -n adsblol <pod-name>
+kubectl describe pod -n bharatradar <pod-name>
 
 # Restart a deployment
-kubectl rollout restart deployment/<name> -n adsblol
+kubectl rollout restart deployment/<name> -n bharatradar
 ```
 
 ### Common Problems
 
 | Problem | Solution |
 |---------|----------|
-| `readsb` crash loop | Add `READSB_DEVICE_TYPE=none` env var |
-| `mlat-server` crash | Python 3.13 compatibility - pkg_resources stub is installed |
+| `ImagePullBackOff` on GHCR images | Check `ghcr-secret` exists and has valid PAT: `kubectl get secret ghcr-secret -n bharatradar` |
+| `readsb` crash loop | Ensure `READSB_DEVICE_TYPE=none` is set for network-only mode |
+| `mlat-server` crash | Python 3.13 compatibility - pkg_resources stub is installed via initContainer |
 | SSL handshake failure | Check certificate covers the subdomain |
-| Pods in CrashLoopBackOff | Check logs: `kubectl logs <pod> -n adsblol` |
-| FRP connection refused | Verify firewall allows port 7000 |
-| nginx 502 Bad Gateway | Check frps is running on port 8080 |
+| FRP `vhost https port is not set` | Add `vhostHTTPSPort = 8443` to `/etc/frps.toml` |
+| nginx 502 Bad Gateway | Check frps is running and vhost ports are configured |
+| No aircraft on map | Check feeder is connected: check `readsb` logs on Pi for hex codes |
+| MLAT map stuck on "Loading regions..." | Check nginx proxy in mlat-server-sync-map: `curl https://mlat.bharat-radar.vellur.in/api/0/mlat-server/0A/sync.json` |
+| `peers: {}` on MLAT map | Normal with single feeder - requires multiple receivers for peer sync |
 
 ### FRP Connection Troubleshooting
 
 ```bash
-# On Pi: Check frpc can reach server
-curl -v telnet://13.48.249.103:7000
+# On Feeder Pi: Check connectivity to FRP server
+nc -zv feed.bharat-radar.vellur.in 30004
+nc -zv feed.bharat-radar.vellur.in 31090
 
-# On Pi: Check frpc logs
+# On Feeder Pi: Check readsb is producing data
+sudo journalctl -u readsb --since "1 min ago" | grep "hex:"
+
+# On Feeder Pi: Check bharat-feeder is connecting
+sudo journalctl -u bharat-feeder --since "1 min ago"
+
+# On Hub: Check frpc can reach FRP server
+nc -zv 13.48.249.103 7000
+
+# On Hub: Check frpc logs
 journalctl -u frpc --since "5 minutes ago"
 
 # On AWS: Check frps logs
@@ -584,32 +886,55 @@ sudo ss -tlnp | grep 8080
 
 ```bash
 # kubectl is available via symlink
-sudo k3s kubectl get pods -n adsblol
+sudo k3s kubectl get pods -n bharatradar
 # or
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-kubectl get pods -n adsblol
+kubectl get pods -n bharatradar
 
-# Common kubectl commands
-kubectl get pods -n adsblol                    # List pods
-kubectl get svc -n adsblol                     # List services
-kubectl get ingress -n adsblol                 # List ingresses
-kubectl logs -n adsblol -l app=planes          # View plane logs
-kubectl describe pod <name> -n adsblol         # Pod details
-kubectl exec -it <pod> -n adsblol -- bash      # Shell into pod
+# Common commands
+kubectl get pods -n bharatradar                    # List pods
+kubectl get svc -n bharatradar                     # List services
+kubectl get ingress -n bharatradar                 # List ingresses
+kubectl get nodes -o wide                          # List nodes with IPs
+kubectl logs -n bharatradar -l app=planes          # View plane logs
+kubectl describe pod <name> -n bharatradar         # Pod details
+kubectl exec -it <pod> -n bharatradar -- bash      # Shell into pod
+kubectl top nodes                                  # Node resource usage
+kubectl top pods -n bharatradar                    # Pod resource usage
+kubectl cordon <node>                              # Prevent scheduling
+kubectl uncordon <node>                            # Allow scheduling
+kubectl drain <node> --ignore-daemonsets           # Evict all pods
+```
+
+### Building Images
+
+```bash
+# Build single image (amd64 only)
+docker buildx build --push -t ghcr.io/bharatradar/readsb:latest build/readsb/
+
+# Build multi-arch
+docker buildx build --push --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/bharatradar/readsb:latest build/readsb/
+
+# Build all images
+for img in readsb docker-tar1090-uuid mlat-server mlat-server-sync-map api; do
+  docker buildx build --push --platform linux/amd64,linux/arm64 \
+    -t ghcr.io/bharatradar/$img:latest build/$img/
+done
 ```
 
 ### FRP
 
 ```bash
-sudo systemctl {start|stop|restart|status} frpc   # FRP client
-sudo systemctl {start|stop|restart|status} frps   # FRP server
+sudo systemctl {start|stop|restart|status} frpc   # FRP client (Hub)
+sudo systemctl {start|stop|restart|status} frps   # FRP server (AWS)
 journalctl -u frpc -f                              # FRP client logs
 journalctl -u frps -f                              # FRP server logs
 cat /etc/frpc.toml                                 # View frpc config
 cat /etc/frps.toml                                 # View frps config
 ```
 
-### Nginx
+### Nginx (on FRP Server)
 
 ```bash
 sudo systemctl {start|stop|restart|reload|status} nginx
@@ -627,16 +952,38 @@ sudo certbot renew --dry-run      # Test renewal
 sudo ls -la /etc/letsencrypt/live/
 ```
 
+### Feeder Pi
+
+```bash
+sudo systemctl status readsb              # ADS-B receiver
+sudo systemctl status bharat-feeder       # Beast feeder bridge
+sudo systemctl status bharat-mlat         # MLAT client
+sudo journalctl -u readsb -f              # Live readsb logs
+sudo journalctl -u bharat-feeder -f       # Live feeder logs
+sudo journalctl -u bharat-mlat -f         # Live MLAT logs
+cat /etc/default/readsb                   # readsb configuration
+cat /etc/bharat-radar-id                  # Feeder UUID
+```
+
 ---
 
 ## Updating
 
 ```bash
 # Update repository
-git pull origin main
+cd infra && git pull origin main
 
-# Rebuild and apply manifests
-kustomize build manifests/default | kubectl apply -f - -n adsblol
+# Rebuild and push images (if Dockerfiles changed)
+for img in readsb docker-tar1090-uuid mlat-server mlat-server-sync-map api; do
+  docker buildx build --push --platform linux/amd64,linux/arm64 \
+    -t ghcr.io/bharatradar/$img:latest build/$img/
+done
+
+# Reapply manifests
+kustomize build manifests/default | kubectl apply -f -
+
+# Restart deployments to pull new images
+kubectl rollout restart deployment -n bharatradar
 ```
 
 ---
@@ -645,4 +992,4 @@ kustomize build manifests/default | kubectl apply -f - -n adsblol
 
 - **GitHub:** https://github.com/ragavellur/infra
 - **Issues:** https://github.com/ragavellur/infra/issues
-- **Original Project:** https://github.com/adsblol
+- **Original Project:** https://github.com/adsblol/infra

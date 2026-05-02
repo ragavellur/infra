@@ -11,11 +11,11 @@ resources:
 - history/default
 - redis/default
 - resources.yaml
-namespace: adsblol
+namespace: bharatradar
 images:
-- name: ghcr.io/katlol/mlat-server
-  newName: ghcr.io/adsblol/mlat-server
+- name: ghcr.io/adsblol/mlat-server
+  newName: ghcr.io/bharatradar/mlat-server
   newTag: latest
-- name: ghcr.io/adsblol/history
-  newName: ghcr.io/ragavellur/history
+- name: ghcr.io/ragavellur/history
+  newName: ghcr.io/bharatradar/history
   newTag: latest

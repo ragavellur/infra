@@ -3,3 +3,12 @@ resources:
 - flux.yaml
 commonLabels:
   name: history
+patches:
+- target:
+    kind: Deployment
+    name: history
+  patch: |-
+    - op: add
+      path: /spec/template/spec/nodeSelector
+      value:
+        kubernetes.io/arch: amd64

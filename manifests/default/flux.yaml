@@ -3,12 +3,12 @@ apiVersion: source.toolkit.fluxcd.io/v1beta2
 kind: GitRepository
 metadata:
   name: infra
-  namespace: adsblol
+  namespace: bharatradar
 spec:
   interval: 1m
   ref:
     branch: main
-  url: ssh://git@github.com/adsblol/infra.git
+  url: ssh://git@github.com/ragavellur/infra.git
   secretRef:
     name: infra
 ---
@@ -17,7 +17,7 @@ apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
 kind: Kustomization
 metadata:
   name: infra
-  namespace: adsblol
+  namespace: bharatradar
 spec:
   interval: 1m
   path: ./manifests/default
@@ -37,11 +37,11 @@ spec:
     name: vault
   data:
   - remoteRef:
-      key: adsblol/infra
+      key: bharatradar/infra
       property: identity
     secretKey: identity
   - remoteRef:
-      key: adsblol/infra
+      key: bharatradar/infra
       property: known_hosts
     secretKey: known_hosts
   refreshInterval: 1m

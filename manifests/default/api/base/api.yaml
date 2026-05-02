@@ -9,7 +9,7 @@ spec:
       - name: ghcr-secret
       containers:
       - name: api
-        image: ghcr.io/adsblol/api:latest
+        image: ghcr.io/bharatradar/api:latest
         imagePullPolicy: Always
         resources:
           requests:

@@ -20,8 +20,24 @@ jobs:
     strategy:
       matrix:
         include:
+          - context: build/readsb
+            image: ghcr.io/bharatradar/readsb
+            platforms: linux/amd64,linux/arm64
           - context: build/docker-tar1090-uuid
             image: ghcr.io/bharatradar/docker-tar1090-uuid
+            platforms: linux/amd64,linux/arm64
+          - context: build/mlat-server
+            image: ghcr.io/bharatradar/mlat-server
+            platforms: linux/amd64
+          - context: build/mlat-server-sync-map
+            image: ghcr.io/bharatradar/mlat-server-sync-map
+            platforms: linux/amd64
+          - context: build/api
+            image: ghcr.io/bharatradar/api
+            platforms: linux/amd64
+          - context: build/history
+            image: ghcr.io/bharatradar/history
+            platforms: linux/amd64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,7 +82,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platforms }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha

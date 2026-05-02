@@ -32,7 +32,7 @@ spec:
           mountPath: /config
       containers:
       - name: history
-        image: ghcr.io/ragavellur/history:latest
+        image: ghcr.io/bharatradar/history:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080

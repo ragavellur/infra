@@ -5,7 +5,7 @@ commonLabels:
   service: public
 images:
 - name: ghcr.io/katlol/mlat-server
-  newName: ghcr.io/adsblol/mlat-server
+  newName: ghcr.io/bharatradar/mlat-server
   newTag: latest
 patches:
 - target:

@@ -17,7 +17,7 @@ kind: ImageRepository
 metadata:
   name: history
 spec:
-  image: ghcr.io/adsblol/history
+  image: ghcr.io/bharatradar/history
   interval: 1m
 ---
 apiVersion: image.toolkit.fluxcd.io/v1beta1

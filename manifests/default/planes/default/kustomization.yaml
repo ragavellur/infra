@@ -2,7 +2,7 @@ resources:
 - ../base
 - resources.yaml
 namePrefix: planes-
-namespace: adsblol
+namespace: bharatradar
 images:
 - name: ghcr.io/wiedehopf/readsb
   newName: ghcr.io/bharatradar/docker-tar1090-uuid
@@ -44,7 +44,7 @@ patches:
       path: /spec/template/spec/containers/0/env/-
       value:
         name: READSB_NET_CONNECTOR
-        value: "hub-readsb.adsblol,30005,beast_in;mlat-mlat-server.adsblol,30104,sbs_in_mlat"
+        value: "hub-readsb.bharatradar,30005,beast_in;mlat-mlat-server.bharatradar,30104,sbs_in_mlat"
     - op: add
       path: /spec/template/spec/containers/0/env/-
       value:

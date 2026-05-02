@@ -17,7 +17,7 @@ kind: ImageRepository
 metadata:
   name: mlat-server-sync-map
 spec:
-  image: ghcr.io/adsblol/mlat-server-sync-map
+  image: ghcr.io/bharatradar/mlat-server-sync-map
   interval: 1m
 ---
 apiVersion: image.toolkit.fluxcd.io/v1beta1
