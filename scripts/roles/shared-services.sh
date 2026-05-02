@@ -243,8 +243,8 @@ role_shared_services_configure_redis() {
         return 0
     fi
 
-    # Bind to LAN IP
-    sed -i "s/^bind 127.0.0.1/bind 127.0.0.1 ${DB_LISTEN_IP}/" "$redis_conf"
+    # Bind to LAN IP (use /c to replace entire line, not partial substitution)
+    sed -i "/^bind /c\\bind 127.0.0.1 ${DB_LISTEN_IP}" "$redis_conf"
 
     # Set password
     if grep -q "^requirepass" "$redis_conf"; then
@@ -257,10 +257,16 @@ role_shared_services_configure_redis() {
     sed -i "s/^protected-mode yes/protected-mode no/" "$redis_conf"
 
     # Restart
-    systemctl restart redis-server
-    systemctl enable redis-server
+    systemctl restart redis-server 2>/dev/null || systemctl restart redis 2>/dev/null || true
+    systemctl enable redis-server 2>/dev/null || systemctl enable redis 2>/dev/null || true
 
-    log_success "Redis configured"
+    sleep 2
+
+    if systemctl is-active --quiet redis-server 2>/dev/null || systemctl is-active --quiet redis 2>/dev/null; then
+        log_success "Redis configured"
+    else
+        log_warn "Redis may need manual restart: sudo systemctl restart redis-server"
+    fi
 }
 
 role_shared_services_install_influxdb() {
