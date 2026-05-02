@@ -206,24 +206,30 @@ detect_local_ip() {
 collect_pg_config() {
     local prefix="${1:-DB}"
 
-    prompt_input "PostgreSQL host IP" "" "${prefix}_HOST"
-    while ! validate_ip "${!prefix_HOST}"; do
+    local host_var="${prefix}_HOST"
+    local port_var="${prefix}_PORT"
+    local dbname_var="${prefix}_DBNAME"
+    local dbuser_var="${prefix}_DBUSER"
+    local dbpass_var="${prefix}_DBPASS"
+
+    prompt_input "PostgreSQL host IP" "" "$host_var"
+    while ! validate_ip "${!host_var}"; do
         log_error "Invalid IP address"
-        prompt_input "PostgreSQL host IP" "${!prefix_HOST}" "${prefix}_HOST"
+        prompt_input "PostgreSQL host IP" "${!host_var}" "$host_var"
     done
 
-    prompt_input "PostgreSQL port" "5432" "${prefix}_PORT"
-    prompt_input "PostgreSQL database name" "k3s" "${prefix}_DBNAME"
-    prompt_input "PostgreSQL username" "k3s" "${prefix}_DBUSER"
-    prompt_input "PostgreSQL password" "" "${prefix}_DBPASS"
+    prompt_input "PostgreSQL port" "5432" "$port_var"
+    prompt_input "PostgreSQL database name" "k3s" "$dbname_var"
+    prompt_input "PostgreSQL username" "k3s" "$dbuser_var"
+    prompt_input "PostgreSQL password" "" "$dbpass_var"
 
-    while [ -z "${!prefix_DBPASS}" ]; do
+    while [ -z "${!dbpass_var}" ]; do
         log_error "Password cannot be empty"
-        prompt_input "PostgreSQL password" "" "${prefix}_DBPASS"
+        prompt_input "PostgreSQL password" "" "$dbpass_var"
     done
 
-    local conn_string="postgres://${!prefix_DBUSER}:${!prefix_DBPASS}@${!prefix_HOST}:${!prefix_PORT}/${!prefix_DBNAME}"
-    eval "${prefix}_CONNECTION_STRING=\"${conn_string}\""
+    local conn_string="postgres://${!dbuser_var}:${!dbpass_var}@${!host_var}:${!port_var}/${!dbname_var}"
+    printf -v "${prefix}_CONNECTION_STRING" '%s' "$conn_string"
 }
 
 # Validate a PostgreSQL connection string
