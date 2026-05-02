@@ -1,6 +1,6 @@
 # BharatRadar Infrastructure Scripts
 
-Automated installation and management scripts for the BharatRadar ADS-B/MLAT platform.
+Automated installation and management for the BharatRadar ADS-B/MLAT platform.
 
 ## Architecture
 
@@ -17,7 +17,7 @@ Automated installation and management scripts for the BharatRadar ADS-B/MLAT pla
               │           192.168.200.145 (Ubuntu i7)           │
               │                                                 │
               │  planes  api  mlat  hub  reapi  ingest          │
-              │  haproxy  redis  mlat-map  external             │
+              │  haproxy  redis  mlat-map  external  website    │
               └──────────────────────┬──────────────────────────┘
                                      │ k3s join
                                      v
@@ -35,92 +35,172 @@ Automated installation and management scripts for the BharatRadar ADS-B/MLAT pla
 
 ## Quick Start
 
-### Interactive Setup
+### Online Install (Recommended)
+
+Run these commands on each machine depending on its role:
+
 ```bash
-sudo ./scripts/bharatradar-setup
+# FRP Server (Cloud/VPS with public IP)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- frp-server
+
+# Hub (K3s server, runs all services)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- hub
+
+# Aggregator (K3s agent, joins existing hub)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- aggregator
+
+# Feeder Pi (RTL-SDR receiver, standalone)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- feeder
 ```
 
-### Hub Node (runs all services)
+### Local Install
+
 ```bash
-sudo ./scripts/bharatradar-cluster create \
-    --role hub \
-    --domain bharat-radar.vellur.in \
-    --lat 18.480718 \
-    --lon 73.898235 \
-    --timezone Asia/Kolkata \
-    --frp-server 13.48.249.103 \
-    --frp-token "your-frp-token"
+# Clone the repo
+git clone https://github.com/ragavellur/infra.git
+cd infra/scripts
+
+# Interactive wizard (asks you what you want to set up)
+sudo ./bharatradar-install
+
+# Or specify role directly
+sudo ./bharatradar-install hub
 ```
 
-### Aggregator Node (K3s agent, failover)
-```bash
-# First get join token from Hub:
-sudo cat /var/lib/rancher/k3s/server/node-token
+### Post-Install Commands
 
-# Then on aggregator Pi:
-curl -sfL https://get.k3s.io | \
-  K3S_URL=https://HUB_IP:6443 \
-  K3S_TOKEN=$TOKEN \
-  sh -
-```
-
-### Feeder Pi (RTL-SDR receiver, not K3s)
 ```bash
-# The Feeder Pi is NOT a K3s node.
-# It runs readsb + mlat-client and connects to feed.bharat-radar.vellur.in
-# See INSTALL.md for Feeder Pi setup instructions.
-```
-
-### View Cluster Info
-```bash
-sudo ./scripts/bharatradar-cluster info
+sudo ./bharatradar-install status      # Health dashboard
+sudo ./bharatradar-install uninstall   # Remove components
+sudo ./bharatradar-install update      # Update scripts and redeploy
+sudo ./bharatradar-install backup      # Backup configuration
 ```
 
 ## Scripts Overview
 
 | Script | Purpose |
 |--------|---------|
-| `bharatradar-setup` | Interactive wizard (recommended for first-time users) |
-| `bharatradar-cluster` | Core cluster management (create/info subcommands) |
-| `frp/setup-frps.sh` | FRP server setup for AWS/cloud machines |
-| `frp/setup-frpc.sh` | Standalone FRP client setup (runs on Hub) |
-| `install/setup-nginx-ssl.sh` | Nginx + Let's Encrypt SSL setup |
+| `bharatradar-install` | **Main entry point** - unified installer for all roles |
+| `bharatradar-setup` | DEPRECATED - redirects to bharatradar-install |
+| `bharatradar-cluster` | Advanced CLI for CI/CD and power users |
 
-## Directory Structure
+### Role Modules (`roles/`)
+
+| Module | Description |
+|--------|-------------|
+| `roles/frp-server.sh` | FRP server setup (AWS/cloud VPS) |
+| `roles/hub.sh` | K3s server + all BharatRadar services |
+| `roles/aggregator.sh` | K3s agent join to existing hub |
+| `roles/feeder.sh` | RTL-SDR standalone receiver setup |
+
+### Helper Modules (`helpers/`)
+
+| Module | Description |
+|--------|-------------|
+| `helpers/functions.sh` | Shared utilities (logging, validation, prompts) |
+| `helpers/templating.sh` | Runtime manifest overlay generation |
+| `helpers/verify.sh` | Post-install health checks |
+| `helpers/uninstall.sh` | Cleanup and reset functions |
+
+### Standalone Scripts (kept for compatibility)
+
+| Script | Description |
+|--------|-------------|
+| `frp/setup-frps.sh` | Standalone FRP server setup |
+| `frp/setup-frpc.sh` | Standalone FRP client setup |
+| `install/setup-nginx-ssl.sh` | Standalone nginx + Let's Encrypt setup |
+
+## Installation Flow
 
 ```
-scripts/
-├── bharatradar-setup              # Interactive wizard
-├── bharatradar-cluster            # Core cluster management
-├── frp/
-│   ├── setup-frps.sh              # FRP server (AWS/Cloud)
-│   └── setup-frpc.sh              # FRP client (Hub node)
-├── install/
-│   └── setup-nginx-ssl.sh         # Nginx + Let's Encrypt
-└── helpers/
-    └── functions.sh               # Shared utilities
+bharatradar-install
+│
+├── [1] Prerequisites check
+│     ├── Root access
+│     ├── OS (Debian/Ubuntu/RPi OS)
+│     ├── Architecture (amd64/arm64/arm)
+│     └── Network connectivity
+│
+├── [2] Role selection
+│     ├── 1) FRP Server (cloud/VPS)
+│     ├── 2) Hub (K3s server)
+│     ├── 3) Aggregator (K3s agent)
+│     └── 4) Feeder Pi (RTL-SDR)
+│
+├── [3] Configuration collection
+│     ├── Base domain
+│     ├── Email (for Let's Encrypt)
+│     ├── Lat/lon/altitude
+│     └── Role-specific (GHCR creds, FRP token, etc.)
+│
+├── [4] Installation
+│     ├── Package installation
+│     ├── Binary downloads
+│     ├── Service configuration
+│     └── Deployment
+│
+└── [5] Post-install
+      ├── Configuration saved to /etc/bharatradar/
+      ├── Health verification
+      └── URLs and next steps displayed
 ```
 
 ## Node Roles
 
-| Feature | Hub | Aggregator | Feeder Pi |
-|---------|-----|------------|-----------|
-| K3s type | Server | Agent | None |
-| Services | All (planes, api, mlat, etc.) | Runs pods on failover | readsb + mlat-client only |
-| FRP | Client (frpc) | None | None |
-| Hardware | Ubuntu i7 / powerful machine | Raspberry Pi (arm64) | Raspberry Pi + RTL-SDR |
-| Connects to | AWS FRP server | Hub (k3s join) | `feed.bharat-radar.vellur.in` |
-| User-facing URL | map.domain.com | - | - |
+| Feature | FRP Server | Hub | Aggregator | Feeder Pi |
+|---------|------------|-----|------------|-----------|
+| OS | Ubuntu/Debian (cloud) | Ubuntu/Debian | Debian/RPi OS | Raspberry Pi OS |
+| K3s | No | Server | Agent | No |
+| Services | frps, nginx, certbot | All (planes, api, mlat, etc.) | Runs pods on failover | readsb + mlat-client |
+| FRP | Server (frps) | Client (frpc) | None | None |
+| Hardware | Cloud VPS / AWS EC2 | Powerful machine (i7+) | Raspberry Pi (arm64) | Raspberry Pi + RTL-SDR |
+| Connects to | - | frps via tunnel | Hub (k3s join) | `feed.domain.com` |
+| Public IP | Required | Optional | Not needed | Not needed |
 
 ## Requirements
 
-- **Root/sudo** access
-- **bash** shell
+- **Root/sudo** access on all machines
+- **bash** shell (4.0+)
 - **curl**, **wget**, **openssl**
 - **systemd** for service management
-- **Linux** (Debian/Ubuntu/Raspberry Pi OS)
-- ARM64, AMD64 architectures
+- **Linux**: Debian 11+, Ubuntu 20.04+, Raspberry Pi OS
+- **Architectures**: amd64, arm64, arm (armv7l)
 
 ## Configuration
 
 All scripts save configuration to `/etc/bharatradar/config.env`.
+
+```bash
+# View current configuration
+cat /etc/bharatradar/config.env
+
+# Backup configuration
+sudo ./bharatradar-install backup
+
+# Restore from backup
+sudo tar xzf /tmp/bharatradar-backup-YYYYMMDD_HHMMSS.tar.gz -C /
+```
+
+## Troubleshooting
+
+```bash
+# Check overall status
+sudo ./bharatradar-install status
+
+# Check K3s cluster
+kubectl get nodes
+kubectl get pods -n bharatradar
+
+# Check FRP
+sudo systemctl status frps     # On FRP server
+sudo systemctl status frpc     # On Hub
+journalctl -u frpc -f          # FRP client logs
+
+# Check feeder services
+sudo systemctl status bharat-feeder
+sudo systemctl status bharat-mlat
+journalctl -u bharat-feeder -f
+
+# Full uninstall and clean start
+sudo ./bharatradar-install uninstall
+```

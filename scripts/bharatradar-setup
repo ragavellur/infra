@@ -1,177 +1,23 @@
 #!/bin/bash
-# BharatRadar Interactive Setup Wizard
-# Version: 1.1.0
-#
-# This is the main entry point for users. It guides them through
-# the complete setup process interactively.
+# DEPRECATED: This script has been replaced by bharatradar-install
+# This script redirects to the new unified installer.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/helpers/functions.sh"
-
-BANNER_TEXT="${CYAN}================================================================${NC}
-${CYAN}        BharatRadar Infrastructure v1.1.0${NC}
-${CYAN}        ADS-B/MLAT Aggregator Platform${NC}
-${CYAN}================================================================${NC}"
-
-echo -e "$BANNER_TEXT"
-echo ""
-
-# Step 1: Base domain
-prompt_input "Enter your base domain" "bharat-radar.vellur.in" BASE_DOMAIN
-
-while ! validate_domain "$BASE_DOMAIN"; do
-    log_error "Invalid domain format. Example: bharat-radar.vellur.in"
-    prompt_input "Enter your base domain" "$BASE_DOMAIN" BASE_DOMAIN
-done
 
 echo ""
-log_success "Base domain: ${BASE_DOMAIN}"
-
-# Step 2: Show DNS records needed
-log_step "DNS Records Required"
-echo ""
-echo "  Create the following A records pointing to your public IP:"
-echo "  (or the IP of your FRP server if using tunneling)"
-echo ""
-echo "  Type    Name                              Value"
-echo "  A       ${BASE_DOMAIN}                    <your-public-ip>"
-for sub in map mlat history api feed ws; do
-    echo "  A       ${sub}.${BASE_DOMAIN}              <your-public-ip>"
-done
-echo ""
-echo "  If using Cloudflare, set proxy to DNS-only (grey cloud)"
-echo "  for initial setup, then enable proxy after SSL is configured."
+echo "[INFO] bharatradar-setup is deprecated."
+echo "[INFO] Use 'bharatradar-install' instead."
 echo ""
 
-if ! prompt_confirm "DNS records created/ready?"; then
-    log_info "Please create the DNS records first, then run this script again."
-    exit 0
-fi
-
-# Step 3: First cluster?
-log_step "Cluster Setup"
-echo ""
-echo "  Is this the first node in your BharatRadar deployment?"
-echo ""
-echo "  YES  - This node will be the HUB (runs all services)"
-echo "         - Map, API, MLAT, Aggregation"
-echo "         - Accepts feeder data from other nodes"
-echo ""
-echo "  NO   - This node is a FEEDER (ingest only)"
-echo "         - Sends ADS-B data to the HUB"
-echo "         - Requires HUB's LAN IP address"
-echo ""
-
-if prompt_confirm "Is this the first node in your deployment?"; then
-    NODE_ROLE="hub"
+# Check if new installer exists
+if [ -f "${SCRIPT_DIR}/bharatradar-install" ]; then
+    echo "[INFO] Redirecting to bharatradar-install..."
+    echo ""
+    exec "${SCRIPT_DIR}/bharatradar-install" "$@"
 else
-    NODE_ROLE="feeder"
+    echo "[ERROR] bharatradar-install not found at ${SCRIPT_DIR}/bharatradar-install"
+    echo "[ERROR] Please update your scripts from the repository."
+    exit 1
 fi
-
-# Collect common parameters
-prompt_input "Receiver latitude" "18.480718" READSB_LAT
-prompt_input "Receiver longitude" "73.898235" READSB_LON
-
-if command -v timedatectl &>/dev/null; then
-    TZ_DEFAULT=$(timedatectl show --property=Timezone --value 2>/dev/null || echo "UTC")
-else
-    TZ_DEFAULT="UTC"
-fi
-prompt_input "Timezone" "$TZ_DEFAULT" TIMEZONE
-
-if [ "$NODE_ROLE" = "hub" ]; then
-    # Hub setup
-    echo ""
-    log_step "Hub Configuration"
-    echo ""
-    echo "  The hub runs all services and serves the web interface."
-    echo ""
-    echo "  Do you want to set up an FRP tunnel for public access?"
-    echo "  (Requires an FRP server running on a cloud/VPS machine)"
-    echo ""
-
-    if prompt_confirm "Set up FRP tunnel for public access?"; then
-        prompt_input "FRP server public IP (e.g., AWS EC2)" "" FRP_SERVER_IP
-
-        while ! validate_ip "$FRP_SERVER_IP"; do
-            log_error "Invalid IP address"
-            prompt_input "FRP server public IP" "$FRP_SERVER_IP" FRP_SERVER_IP
-        done
-
-        prompt_input "FRP authentication token" "" FRP_TOKEN
-
-        while [ -z "$FRP_TOKEN" ]; do
-            log_error "Token cannot be empty"
-            prompt_input "FRP authentication token" "" FRP_TOKEN
-        done
-
-        FRP_ARGS="--frp-server ${FRP_SERVER_IP} --frp-token ${FRP_TOKEN}"
-    else
-        FRP_ARGS=""
-        log_info "No FRP tunnel. Services will only be accessible on the local network."
-        log_info "To add public access later, run setup again or configure nginx+certbot."
-    fi
-
-    # Execute hub creation
-    sudo "${SCRIPT_DIR}/bharatradar-cluster" create \
-        --role hub \
-        --domain "$BASE_DOMAIN" \
-        --lat "$READSB_LAT" \
-        --lon "$READSB_LON" \
-        --timezone "$TIMEZONE" \
-        ${FRP_ARGS}
-
-else
-    # Feeder setup
-    echo ""
-    log_step "Feeder Configuration"
-    echo ""
-
-    prompt_input "Hub LAN IP address (where the hub is running)" "" HUB_IP
-
-    while ! validate_ip "$HUB_IP"; do
-        log_error "Invalid IP address"
-        prompt_input "Hub LAN IP address" "$HUB_IP" HUB_IP
-    done
-
-    # Execute feeder creation
-    sudo "${SCRIPT_DIR}/bharatradar-cluster" create \
-        --role feeder \
-        --hub-ip "$HUB_IP" \
-        --domain "$BASE_DOMAIN" \
-        --lat "$READSB_LAT" \
-        --lon "$READSB_LON" \
-        --timezone "$TIMEZONE"
-fi
-
-echo ""
-echo -e "${GREEN}================================================================${NC}"
-echo -e "${GREEN}        Setup Complete!${NC}"
-echo -e "${GREEN}================================================================${NC}"
-echo ""
-
-if [ "$NODE_ROLE" = "hub" ]; then
-    echo "  Your BharatRadar hub is now running!"
-    echo ""
-    echo "  URLs:"
-    echo "    Map:       https://map.${BASE_DOMAIN}"
-    echo "    MLAT Map:  https://mlat.${BASE_DOMAIN}"
-    echo "    API:       https://api.${BASE_DOMAIN}"
-    echo "    Feed:      https://feed.${BASE_DOMAIN}"
-    echo ""
-    echo "  To add a feeder node, run on another machine:"
-    echo "    sudo ./scripts/bharatradar-cluster create --role feeder --hub-ip $(hostname -I | awk '{print $1}')"
-else
-    echo "  Your feeder is now running and forwarding data to ${HUB_IP}"
-    echo ""
-    echo "  Check hub at https://map.${BASE_DOMAIN} to see aircraft"
-fi
-
-echo ""
-echo "  Useful commands:"
-echo "    kubectl get pods -n adsblol          # Check pod status"
-echo "    sudo systemctl status frpc            # Check FRP (if enabled)"
-echo "    cat /etc/bharatradar/config.env       # View configuration"
-echo ""

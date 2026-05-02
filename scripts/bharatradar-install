@@ -1,0 +1,373 @@
+#!/bin/bash
+# BharatRadar Infrastructure Installer v2.0.0
+#
+# Main entry point for all installation workflows.
+# Supports interactive mode and non-interactive (role-based) mode.
+#
+# Usage:
+#   sudo ./bharatradar-install                    # Interactive wizard
+#   sudo ./bharatradar-install frp-server         # FRP server setup
+#   sudo ./bharatradar-install hub                # Hub setup
+#   sudo ./bharatradar-install aggregator         # Aggregator node setup
+#   sudo ./bharatradar-install feeder             # Feeder Pi setup
+#   sudo ./bharatradar-install status             # Show health dashboard
+#   sudo ./bharatradar-install uninstall [role]   # Remove components
+#   sudo ./bharatradar-install update             # Update scripts and redeploy
+#   sudo ./bharatradar-install backup             # Backup configs
+#
+# Online install:
+#   curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash
+
+set -euo pipefail
+
+VERSION="2.0.0"
+
+# Determine script directory (works for both local and piped execution)
+if [ -n "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+    SCRIPT_DIR="/opt/bharatradar/scripts"
+fi
+
+# Source helper functions
+source "${SCRIPT_DIR}/helpers/functions.sh"
+
+# Global configuration (loaded from config.env if present)
+ROLE="${ROLE:-}"
+BASE_DOMAIN="${BASE_DOMAIN:-}"
+READSB_LAT="${READSB_LAT:-18.480718}"
+READSB_LON="${READSB_LON:-73.898235}"
+TIMEZONE="${TIMEZONE:-UTC}"
+HUB_IP="${HUB_IP:-}"
+K3S_TOKEN="${K3S_TOKEN:-}"
+FRP_SERVER="${FRP_SERVER:-}"
+FRP_TOKEN="${FRP_TOKEN:-}"
+FEEDER_DOMAIN="${FEEDER_DOMAIN:-feed.bharat-radar.vellur.in}"
+FRP_VERSION="0.68.1"
+
+# Load existing configuration
+load_config() {
+    if [ -f /etc/bharatradar/config.env ]; then
+        source /etc/bharatradar/config.env
+        log_info "Loaded existing configuration from /etc/bharatradar/config.env"
+    fi
+}
+
+# Print the welcome banner
+print_banner() {
+    echo ""
+    echo -e "${CYAN}================================================================${NC}"
+    echo -e "${CYAN}        BharatRadar Infrastructure v${VERSION}${NC}"
+    echo -e "${CYAN}        ADS-B/MLAT Aggregator Platform${NC}"
+    echo -e "${CYAN}================================================================${NC}"
+    echo ""
+}
+
+# Check system prerequisites
+check_prerequisites() {
+    log_step "Checking Prerequisites"
+
+    # Check root
+    if [ "$(id -u)" -ne 0 ]; then
+        log_error "This script must be run as root. Use 'sudo'."
+        exit 1
+    fi
+    log_success "Root access: OK"
+
+    # Check OS
+    local os
+    os=$(detect_os)
+    case "$os" in
+        debian|ubuntu|raspbian)
+            log_success "OS: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2 || echo 'Linux')"
+            ;;
+        fedora|centos|rhel)
+            log_success "OS: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2 || echo 'Linux')"
+            ;;
+        *)
+            log_error "Unsupported OS: ${os}"
+            log_info "Supported: Debian, Ubuntu, Raspberry Pi OS, Fedora, CentOS, RHEL"
+            exit 1
+            ;;
+    esac
+
+    # Check architecture
+    local arch
+    arch=$(detect_arch)
+    case "$arch" in
+        amd64|arm64|arm)
+            log_success "Architecture: ${arch}"
+            ;;
+        *)
+            log_error "Unsupported architecture: ${arch}"
+            log_info "Supported: amd64 (x86_64), arm64 (aarch64), arm (armv7l)"
+            exit 1
+            ;;
+    esac
+
+    # Check network
+    if ping -c1 -W2 8.8.8.8 &>/dev/null; then
+        log_success "Network connectivity: OK"
+    else
+        log_warn "Network connectivity test failed (may still work)"
+    fi
+
+    # Check available disk space
+    local available_gb
+    available_gb=$(df / --output=avail 2>/dev/null | tail -1 | awk '{printf "%.0f", $1/1048576}')
+    if [ "${available_gb:-0}" -lt 5 ]; then
+        log_warn "Low disk space: ${available_gb}GB available (5GB+ recommended)"
+    else
+        log_success "Disk space: ${available_gb}GB available"
+    fi
+
+    echo ""
+}
+
+# Interactive role selection
+select_role() {
+    echo ""
+    echo -e "${CYAN}What are you setting up?${NC}"
+    echo ""
+    echo "  1) FRP Server     - Cloud/VPS with public IP"
+    echo "                      Runs frps, nginx, Let's Encrypt SSL"
+    echo ""
+    echo "  2) Hub            - K3s server, runs all services"
+    echo "                      Map, API, MLAT, Aggregation"
+    echo ""
+    echo "  3) Aggregator     - K3s agent, joins existing hub"
+    echo "                      Failover node, runs pods from hub"
+    echo ""
+    echo "  4) Feeder Pi      - RTL-SDR receiver (standalone)"
+    echo "                      readsb + mlat-client, feeds to hub"
+    echo ""
+
+    local choice
+    while true; do
+        read -rp "Select [1-4]: " choice
+        case "$choice" in
+            1) ROLE="frp-server"; break ;;
+            2) ROLE="hub"; break ;;
+            3) ROLE="aggregator"; break ;;
+            4) ROLE="feeder"; break ;;
+            *) echo "Invalid selection. Please enter 1, 2, 3, or 4." ;;
+        esac
+    done
+    echo ""
+}
+
+# Run the selected role
+run_role() {
+    local role_file="${SCRIPT_DIR}/roles/${ROLE}.sh"
+
+    if [ ! -f "$role_file" ]; then
+        log_error "Unknown role: ${ROLE}"
+        log_info "Available roles: frp-server, hub, aggregator, feeder"
+        exit 1
+    fi
+
+    log_info "Starting ${ROLE} setup..."
+    echo ""
+
+    # Source and run the role
+    source "$role_file"
+    "role_${ROLE//-/_}_run"
+}
+
+# Status command
+cmd_status() {
+    load_config
+
+    source "${SCRIPT_DIR}/helpers/verify.sh"
+
+    local role="${ROLE:-unknown}"
+    local domain="${BASE_DOMAIN:-unknown}"
+
+    verify_status "$role" "$domain"
+}
+
+# Uninstall command
+cmd_uninstall() {
+    source "${SCRIPT_DIR}/helpers/uninstall.sh"
+
+    uninstall_all "${1:-}"
+}
+
+# Update command: pull latest scripts and redeploy
+cmd_update() {
+    log_step "Updating BharatRadar"
+
+    load_config
+
+    if [ -z "${ROLE:-}" ]; then
+        log_error "No role found in configuration. Run setup first."
+        exit 1
+    fi
+
+    log_info "Current role: ${ROLE}"
+    log_info "Domain: ${BASE_DOMAIN:-unknown}"
+    echo ""
+
+    # For hub nodes, redeploy manifests
+    if [ "${ROLE}" = "hub" ]; then
+        log_step "Redeploying manifests..."
+
+        if command -v kustomize &>/dev/null; then
+            kustomize build "${SCRIPT_DIR}/../manifests/default" 2>/dev/null | kubectl apply -f - -n bharatradar || {
+                log_warn "kustomize build failed"
+            }
+        fi
+
+        log_success "Manifests redeployed"
+    fi
+
+    # Check for script updates
+    if command -v git &>/dev/null && [ -d "${SCRIPT_DIR}/../.git" ]; then
+        log_info "Checking for script updates..."
+        cd "${SCRIPT_DIR}/.."
+        if git fetch origin &>/dev/null; then
+            local behind
+            behind=$(git rev-list HEAD..origin/main --count 2>/dev/null || echo "0")
+            if [ "$behind" -gt 0 ]; then
+                log_info "${behind} update(s) available"
+                if prompt_confirm "Pull and apply updates?"; then
+                    git pull origin main
+                    log_success "Scripts updated"
+                fi
+            else
+                log_success "Scripts are up to date"
+            fi
+        fi
+        cd - >/dev/null
+    fi
+
+    echo ""
+    log_success "Update complete"
+}
+
+# Backup command
+cmd_backup() {
+    log_step "Backing up Configuration"
+
+    local timestamp
+    timestamp=$(date +"%Y%m%d_%H%M%S")
+    local backup_file="/tmp/bharatradar-backup-${timestamp}.tar.gz"
+
+    local backup_dirs=()
+
+    if [ -d /etc/bharatradar ]; then
+        backup_dirs+=("/etc/bharatradar")
+    fi
+
+    if [ -f /etc/frpc.toml ]; then
+        backup_dirs+=("/etc/frpc.toml")
+    fi
+
+    if [ -f /etc/frps.toml ]; then
+        backup_dirs+=("/etc/frps.toml")
+    fi
+
+    if [ -d /etc/systemd/system ] && ls /etc/systemd/system/bharat-*.service /etc/systemd/system/frp*.service 2>/dev/null | head -1 &>/dev/null; then
+        backup_dirs+=("/etc/systemd/system/bharat-feeder.service" "/etc/systemd/system/bharat-mlat.service" "/etc/systemd/system/frps.service" "/etc/systemd/system/frpc.service")
+    fi
+
+    if [ -f /etc/bharat-radar-id ]; then
+        backup_dirs+=("/etc/bharat-radar-id")
+    fi
+
+    if [ ${#backup_dirs[@]} -eq 0 ]; then
+        log_warn "No configuration files found to backup"
+        return 0
+    fi
+
+    tar czf "$backup_file" "${backup_dirs[@]}" 2>/dev/null
+    chmod 600 "$backup_file"
+
+    log_success "Backup created: ${backup_file}"
+    log_info "Restore with: sudo tar xzf ${backup_file} -C /"
+}
+
+# Show usage
+usage() {
+    cat <<EOF
+BharatRadar Infrastructure Installer v${VERSION}
+
+Usage:
+  sudo $0 [COMMAND] [OPTIONS]
+
+Commands:
+  (no args)       Run interactive setup wizard
+  frp-server      Set up FRP server on cloud/VPS
+  hub             Set up K3s hub with all services
+  aggregator      Join existing hub as K3s agent
+  feeder          Set up RTL-SDR receiver
+  status          Show health dashboard
+  uninstall       Remove BharatRadar components
+  update          Update scripts and redeploy
+  backup          Backup configuration files
+  help            Show this help message
+
+Online Install:
+  curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash
+  curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- frp-server
+  curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- hub
+  curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- feeder
+
+Examples:
+  # Interactive setup
+  sudo $0
+
+  # Non-interactive FRP server setup
+  sudo $0 frp-server
+
+  # Check cluster status
+  sudo $0 status
+
+  # Uninstall everything
+  sudo $0 uninstall
+EOF
+}
+
+# Main entry point
+main() {
+    load_config
+
+    local command="${1:-}"
+
+    case "$command" in
+        frp-server|hub|aggregator|feeder)
+            print_banner
+            check_prerequisites
+            ROLE="$command"
+            run_role
+            ;;
+        status)
+            cmd_status
+            ;;
+        uninstall)
+            cmd_uninstall "${2:-}"
+            ;;
+        update)
+            cmd_update
+            ;;
+        backup)
+            cmd_backup
+            ;;
+        help|--help|-h)
+            usage
+            ;;
+        "")
+            print_banner
+            check_prerequisites
+            select_role
+            run_role
+            ;;
+        *)
+            log_error "Unknown command: ${command}"
+            usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
