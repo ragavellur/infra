@@ -558,6 +558,8 @@ role_shared_services_post_install() {
 role_shared_services_run() {
     require_root
 
+    local install_failed=false
+
     # Load existing config if present
     if [ -f /etc/bharatradar/db-config.env ]; then
         source /etc/bharatradar/db-config.env
@@ -566,15 +568,26 @@ role_shared_services_run() {
     fi
 
     role_shared_services_collect_config
-    role_shared_services_install_packages
-    role_shared_services_install_postgresql
-    role_shared_services_configure_postgresql
-    role_shared_services_install_redis
-    role_shared_services_configure_redis
-    role_shared_services_install_influxdb
-    role_shared_services_configure_influxdb
-    role_shared_services_install_minio
-    role_shared_services_configure_minio
+
+    # Critical services - must succeed for K3s to work
+    role_shared_services_install_packages || install_failed=true
+    role_shared_services_install_postgresql || install_failed=true
+    role_shared_services_configure_postgresql || install_failed=true
+    role_shared_services_install_redis || install_failed=true
+    role_shared_services_configure_redis || install_failed=true
+
+    # Optional services - failures are non-fatal
+    role_shared_services_install_influxdb || log_warn "InfluxDB installation skipped/failed"
+    role_shared_services_configure_influxdb || log_warn "InfluxDB configuration skipped/failed"
+    role_shared_services_install_minio || log_warn "MinIO installation skipped/failed"
+    role_shared_services_configure_minio || log_warn "MinIO configuration skipped/failed"
+
+    # Always save config and show credentials
     role_shared_services_save_config
     role_shared_services_post_install
+
+    if [ "$install_failed" = true ]; then
+        log_error "Critical service installation failed. Check the output above."
+        exit 1
+    fi
 }
