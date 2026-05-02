@@ -167,15 +167,14 @@ role_shared_services_configure_postgresql() {
         return 1
     fi
 
-    # Configure listen addresses
-    sed -i "s/#listen_addresses = 'localhost'/listen_addresses = 'localhost,${DB_LISTEN_IP}'/" "$pg_conf"
-    sed -i "s/listen_addresses = 'localhost'/listen_addresses = 'localhost,${DB_LISTEN_IP}'/" "$pg_conf"
+    # Configure listen addresses - use * to accept from all local IPs
+    # Access control is handled by pg_hba.conf
+    sed -i "/^#*listen_addresses/c\\listen_addresses = '*'" "$pg_conf"
 
-    # Add connection permission for K3s servers
+    # Add connection permission for K3s servers on the local subnet
     local subnet
     subnet=$(echo "$DB_LISTEN_IP" | sed 's/\.[0-9]*$/\.0\/24/')
-    if ! grep -q "${subnet}" "$pg_hba"; then
-        echo "host    k3s             k3s             ${subnet}            md5" >> "$pg_hba"
+    if ! grep -q "${subnet}.*md5" "$pg_hba"; then
         echo "host    all             all             ${subnet}            md5" >> "$pg_hba"
     fi
 
@@ -185,7 +184,6 @@ role_shared_services_configure_postgresql() {
 
     for i in $(seq 1 30); do
         if systemctl is-active --quiet "$pg_service"; then
-            log_success "PostgreSQL configured and running"
             break
         fi
         sleep 1
@@ -194,6 +192,21 @@ role_shared_services_configure_postgresql() {
     if ! systemctl is-active --quiet "$pg_service"; then
         log_error "PostgreSQL failed to start"
         log_info "Check: journalctl -u ${pg_service} -f"
+        return 1
+    fi
+
+    # Verify listen_addresses took effect
+    if grep -q "^listen_addresses = '\*'" "$pg_conf"; then
+        log_success "PostgreSQL listening on all interfaces"
+    else
+        log_warn "listen_addresses may not be correct, check: grep listen_addresses $pg_conf"
+    fi
+
+    # Verify network binding
+    if ss -tlnp | grep -q ":${DB_PORT}"; then
+        log_success "PostgreSQL listening on port ${DB_PORT}"
+    else
+        log_error "PostgreSQL not listening on port ${DB_PORT}"
         return 1
     fi
 
@@ -350,7 +363,7 @@ role_shared_services_save_config() {
     cat > /etc/bharatradar/db-config.env <<EOF
 # Shared Services Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.3.0
+# Version: 3.3.1
 
 ROLE=shared-services
 DB_LISTEN_IP="${DB_LISTEN_IP}"
