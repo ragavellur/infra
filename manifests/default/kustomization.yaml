@@ -9,7 +9,6 @@ resources:
 - mlat-map/default
 - api/default
 - history/default
-- redis/default
 - website/default
 - resources.yaml
 namespace: bharatradar

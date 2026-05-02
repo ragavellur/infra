@@ -29,7 +29,7 @@ role_hub_collect_config() {
     echo ""
     log_step "External Redis Configuration"
     echo ""
-    echo "  Services (API, MLAT, History) connect to Redis on the shared services host."
+    echo "  The API service connects to Redis on the shared services host."
     echo "  Enter the Redis server details."
     echo ""
 
@@ -80,6 +80,7 @@ role_hub_collect_config() {
     if [ "$ds_choice" = "Embedded etcd" ]; then
         USE_EXTERNAL_DB=false
         DB_CONNECTION_STRING=""
+        unset K3S_DATASTORE_ENDPOINT 2>/dev/null || true
         log_info "Using embedded etcd datastore"
     else
         USE_EXTERNAL_DB=true
@@ -175,18 +176,18 @@ role_hub_install_k3s() {
     K3S_TOKEN=$(generate_token)
     export K3S_TOKEN
 
-    local k3s_args=""
+    local k3s_args=()
 
     if [ "$USE_EXTERNAL_DB" = true ]; then
         export K3S_DATASTORE_ENDPOINT="$DB_CONNECTION_STRING"
-        k3s_args="--datastore-endpoint=${DB_CONNECTION_STRING}"
+        k3s_args=("--datastore-endpoint=${DB_CONNECTION_STRING}")
         log_info "Installing K3s with external datastore..."
     else
-        k3s_args="--cluster-init"
+        k3s_args=("--cluster-init")
         log_info "Installing K3s with embedded etcd..."
     fi
 
-    curl -sfL https://get.k3s.io | sh -s - server ${k3s_args}
+    curl -sfL https://get.k3s.io | sh -s - server "${k3s_args[@]}"
 
     log_info "Waiting for K3s to be ready..."
     for i in $(seq 1 60); do
@@ -292,7 +293,6 @@ role_hub_deploy_services() {
     }
 
     # Phase 1: Core services (no external dependencies)
-    deploy_component "redis"
     deploy_component "api"
     deploy_component "website"
 
@@ -339,31 +339,10 @@ role_hub_deploy_services() {
         TZ="${TIMEZONE}" \
         -n bharatradar 2>/dev/null || true
 
-    # Apply API env patch
+    # Apply API env patch (Redis URL + domain)
     kubectl set env deployment/api-api \
         MY_DOMAIN="my.${BASE_DOMAIN}" \
-        REDIS_HOST="${REDIS_HOST}" \
-        REDIS_PORT="${REDIS_PORT}" \
-        REDIS_PASSWORD="${REDIS_PASSWORD}" \
-        -n bharatradar 2>/dev/null || true
-
-    # Apply Redis env to all services that need it
-    kubectl set env deployment/haproxy \
-        REDIS_HOST="${REDIS_HOST}" \
-        REDIS_PORT="${REDIS_PORT}" \
-        REDIS_PASSWORD="${REDIS_PASSWORD}" \
-        -n bharatradar 2>/dev/null || true
-
-    kubectl set env deployment/mlat-map-mlat-map \
-        REDIS_HOST="${REDIS_HOST}" \
-        REDIS_PORT="${REDIS_PORT}" \
-        REDIS_PASSWORD="${REDIS_PASSWORD}" \
-        -n bharatradar 2>/dev/null || true
-
-    kubectl set env deployment/history-history \
-        REDIS_HOST="${REDIS_HOST}" \
-        REDIS_PORT="${REDIS_PORT}" \
-        REDIS_PASSWORD="${REDIS_PASSWORD}" \
+        ADSBLOL_REDIS_HOST="redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}" \
         -n bharatradar 2>/dev/null || true
 
     # Apply API salt ConfigMap
@@ -501,7 +480,7 @@ role_hub_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Primary Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.4.0
+# Version: 3.4.1
 
 ROLE=hub
 BASE_DOMAIN="${BASE_DOMAIN}"
