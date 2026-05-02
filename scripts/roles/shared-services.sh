@@ -350,19 +350,19 @@ role_shared_services_save_config() {
     cat > /etc/bharatradar/db-config.env <<EOF
 # Shared Services Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.0.5
+# Version: 3.1.0
 
 ROLE=shared-services
-DB_LISTEN_IP=${DB_LISTEN_IP}
-DB_PORT=${DB_PORT}
-DB_USER=${DB_USER}
-DB_PASSWORD=${DB_PASSWORD}
-DB_NAME=${DB_NAME}
-REDIS_PASSWORD=${REDIS_PASSWORD}
-INFLUXDB_ADMIN_TOKEN=${INFLUXDB_ADMIN_TOKEN}
+DB_LISTEN_IP="${DB_LISTEN_IP}"
+DB_PORT="${DB_PORT}"
+DB_USER="${DB_USER}"
+DB_PASSWORD="${DB_PASSWORD}"
+DB_NAME="${DB_NAME}"
+REDIS_PASSWORD="${REDIS_PASSWORD}"
+INFLUXDB_ADMIN_TOKEN="${INFLUXDB_ADMIN_TOKEN}"
 
 # Connection string for K3s servers
-DB_CONNECTION_STRING=${conn_string}
+DB_CONNECTION_STRING="${conn_string}"
 EOF
 
     chmod 600 /etc/bharatradar/db-config.env
@@ -372,10 +372,10 @@ EOF
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 ROLE=shared-services
-DB_LISTEN_IP=${DB_LISTEN_IP}
-DB_PORT=${DB_PORT}
-DB_USER=${DB_USER}
-DB_NAME=${DB_NAME}
+DB_LISTEN_IP="${DB_LISTEN_IP}"
+DB_PORT="${DB_PORT}"
+DB_USER="${DB_USER}"
+DB_NAME="${DB_NAME}"
 EOF
 
     chmod 600 /etc/bharatradar/config.env

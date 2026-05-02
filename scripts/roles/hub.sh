@@ -167,7 +167,7 @@ role_hub_install_k3s() {
         log_info "Installing K3s with embedded etcd..."
     fi
 
-    curl -sfL https://get.k3s.io | sh -s - server $k3s_args
+    curl -sfL https://get.k3s.io | sh -s - server ${k3s_args}
 
     log_info "Waiting for K3s to be ready..."
     for i in $(seq 1 60); do
@@ -417,21 +417,21 @@ role_hub_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Primary Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.0.5
+# Version: 3.1.0
 
 ROLE=hub
-BASE_DOMAIN=${BASE_DOMAIN}
-READSB_LAT=${READSB_LAT}
-READSB_LON=${READSB_LON}
-TIMEZONE=${TIMEZONE}
-GHCR_USERNAME=${GHCR_USERNAME}
-USE_EXTERNAL_DB=${USE_EXTERNAL_DB}
-DB_CONNECTION_STRING=${DB_CONNECTION_STRING:-}
-FRP_ENABLED=${FRP_ENABLED}
-FRP_SERVER=${FRP_SERVER:-}
-K3S_TOKEN=${K3S_TOKEN:-}
-KEEPALIVED_ENABLED=${KEEPALIVED_ENABLED}
-KEEPALIVED_VIP=${KEEPALIVED_VIP:-}
+BASE_DOMAIN="${BASE_DOMAIN}"
+READSB_LAT="${READSB_LAT}"
+READSB_LON="${READSB_LON}"
+TIMEZONE="${TIMEZONE}"
+GHCR_USERNAME="${GHCR_USERNAME}"
+USE_EXTERNAL_DB="${USE_EXTERNAL_DB}"
+DB_CONNECTION_STRING="${DB_CONNECTION_STRING:-}"
+FRP_ENABLED="${FRP_ENABLED}"
+FRP_SERVER="${FRP_SERVER:-}"
+K3S_TOKEN="${K3S_TOKEN:-}"
+KEEPALIVED_ENABLED="${KEEPALIVED_ENABLED}"
+KEEPALIVED_VIP="${KEEPALIVED_VIP:-}"
 KEEPALIVED_PRIORITY=100
 EOF
 

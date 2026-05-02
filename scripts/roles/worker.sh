@@ -85,12 +85,12 @@ role_worker_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Worker Node Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.0.5
+# Version: 3.1.0
 
 ROLE=worker
-HUB_IP=${HUB_IP}
-K3S_TOKEN=${K3S_TOKEN}
-BASE_DOMAIN=${BASE_DOMAIN}
+HUB_IP="${HUB_IP}"
+K3S_TOKEN="${K3S_TOKEN}"
+BASE_DOMAIN="${BASE_DOMAIN}"
 EOF
 
     chmod 600 /etc/bharatradar/config.env

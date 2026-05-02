@@ -288,17 +288,17 @@ role_feeder_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Feeder Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 2.0.0
+# Version: 3.1.0
 
 ROLE=feeder
-FEEDER_DOMAIN=${FEEDER_DOMAIN}
-READSB_LAT=${READSB_LAT}
-READSB_LON=${READSB_LON}
-FEEDER_ALT_M=${FEEDER_ALT_M}
-FEEDER_UUID=${FEEDER_UUID}
-FEEDER_NAME=${FEEDER_NAME}
-SDR_SERIAL=${SDR_SERIAL}
-MLAT_PRIVACY=${MLAT_PRIVACY:-}
+FEEDER_DOMAIN="${FEEDER_DOMAIN}"
+READSB_LAT="${READSB_LAT}"
+READSB_LON="${READSB_LON}"
+FEEDER_ALT_M="${FEEDER_ALT_M}"
+FEEDER_UUID="${FEEDER_UUID}"
+FEEDER_NAME="${FEEDER_NAME}"
+SDR_SERIAL="${SDR_SERIAL}"
+MLAT_PRIVACY="${MLAT_PRIVACY:-}"
 EOF
 
     chmod 600 /etc/bharatradar/config.env

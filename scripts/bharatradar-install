@@ -20,7 +20,7 @@
 
 set -eo pipefail
 
-VERSION="3.0.5"
+VERSION="3.1.0"
 
 # Determine script directory
 # When piped (curl | bash), BASH_SOURCE is empty — we do a shallow clone instead
@@ -41,7 +41,7 @@ if [ "$SELF_INSTALL" = true ]; then
         git clone --depth 1 -b main \
             https://github.com/ragavellur/infra.git "${TMPDIR}/infra" 2>/dev/null || {
             log_info "Git clone failed, trying direct download..."
-            for f in scripts/bharatradar-install scripts/helpers/functions.sh scripts/helpers/templating.sh scripts/helpers/verify.sh scripts/helpers/uninstall.sh scripts/helpers/ssh-helpers.sh scripts/helpers/node-ops.sh scripts/roles/frp-server.sh scripts/roles/hub.sh scripts/roles/ha-server.sh scripts/roles/worker.sh scripts/roles/shared-services.sh scripts/roles/db-standby.sh scripts/roles/feeder.sh scripts/roles/keepalived.sh; do
+            for f in scripts/bharatradar-install scripts/helpers/functions.sh scripts/helpers/templating.sh scripts/helpers/verify.sh scripts/helpers/uninstall.sh scripts/helpers/ssh-helpers.sh scripts/roles/frp-server.sh scripts/roles/hub.sh scripts/roles/ha-server.sh scripts/roles/worker.sh scripts/roles/shared-services.sh scripts/roles/db-standby.sh scripts/roles/feeder.sh scripts/roles/keepalived.sh scripts/roles/aggregator.sh; do
                 mkdir -p "${TMPDIR}/$(dirname "$f")"
                 curl -sL "https://raw.githubusercontent.com/ragavellur/infra/main/${f}" -o "${TMPDIR}/${f}"
             done
