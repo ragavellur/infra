@@ -229,6 +229,14 @@ role_hub_create_secrets() {
         rm -f /tmp/tls.crt /tmp/tls.key
         log_warn "Self-signed TLS certificate created (placeholder)"
     fi
+
+    # Rclone secret (placeholder for history service)
+    if ! kubectl get secret adsblol-rclone -n bharatradar &>/dev/null; then
+        echo "[placeholder]" | kubectl create secret generic adsblol-rclone \
+            --from-file=rclone.conf=/dev/stdin \
+            -n bharatradar --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+        log_warn "Rclone secret created with placeholder"
+    fi
 }
 
 role_hub_deploy_services() {
