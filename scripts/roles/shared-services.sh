@@ -106,45 +106,63 @@ role_shared_services_install_packages() {
 role_shared_services_install_postgresql() {
     log_step "Installing PostgreSQL"
 
-    if command -v psql &>/dev/null; then
-        log_info "PostgreSQL already installed: $(psql --version 2>/dev/null || echo 'unknown')"
-        return 0
-    fi
-
     local os
     os=$(detect_os)
 
-    case "$os" in
-        debian|ubuntu|raspbian)
-            # Use PGDG repo for latest PostgreSQL
-            local codename
-            codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+    if ! command -v psql &>/dev/null; then
+        case "$os" in
+            debian|ubuntu|raspbian)
+                local codename
+                codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
 
-            # Install from distro repo (simpler, works on most)
-            apt-get install -y -qq postgresql postgresql-client || {
-                # Fallback: try PGDG repo
-                echo "deb http://apt.postgresql.org/pub/repos/apt ${codename}-pgdg main" > /etc/apt/sources.list.d/pgdg.list
-                wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg
-                apt-get update -qq
-                apt-get install -y -qq postgresql postgresql-client
-            }
-            ;;
-    esac
+                apt-get install -y -qq postgresql postgresql-client || {
+                    echo "deb http://apt.postgresql.org/pub/repos/apt ${codename}-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+                    wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg
+                    apt-get update -qq
+                    apt-get install -y -qq postgresql postgresql-client
+                }
+                ;;
+        esac
+        log_success "PostgreSQL installed"
+    else
+        log_info "PostgreSQL already installed: $(psql --version 2>/dev/null || echo 'unknown')"
+    fi
 
-    log_success "PostgreSQL installed"
+    # Ensure the cluster actually exists and has a data directory
+    local pg_version
+    pg_version=$(ls /etc/postgresql/ 2>/dev/null | head -1)
+    if [ -n "$pg_version" ] && [ ! -d "/var/lib/postgresql/${pg_version}/main" ]; then
+        log_warn "PostgreSQL data directory missing, recreating cluster..."
+        pg_dropcluster --stop "$pg_version" main 2>/dev/null || true
+        pg_createcluster "$pg_version" main 2>/dev/null
+        log_success "PostgreSQL cluster recreated"
+    fi
 }
 
 role_shared_services_configure_postgresql() {
     log_step "Configuring PostgreSQL"
 
-    local pg_conf
-    local pg_hba
+    # Find the PostgreSQL version and cluster
+    local pg_version
+    pg_version=$(ls /etc/postgresql/ 2>/dev/null | head -1)
+    if [ -z "$pg_version" ]; then
+        log_error "No PostgreSQL version found"
+        return 1
+    fi
 
-    # Find PostgreSQL config paths
-    pg_conf=$(find /etc/postgresql -name postgresql.conf 2>/dev/null | head -1)
-    pg_hba=$(find /etc/postgresql -name pg_hba.conf 2>/dev/null | head -1)
+    local pg_conf="/etc/postgresql/${pg_version}/main/postgresql.conf"
+    local pg_hba="/etc/postgresql/${pg_version}/main/pg_hba.conf"
+    local data_dir="/var/lib/postgresql/${pg_version}/main"
+    local pg_service="postgresql@${pg_version}-main"
 
-    if [ -z "$pg_conf" ] || [ -z "$pg_hba" ]; then
+    # Fix stale cluster: config exists but data directory doesn't
+    if [ ! -d "$data_dir" ]; then
+        log_warn "PostgreSQL data directory missing, recreating cluster..."
+        pg_dropcluster --stop "$pg_version" main 2>/dev/null || true
+        pg_createcluster "$pg_version" main 2>/dev/null
+    fi
+
+    if [ ! -f "$pg_conf" ] || [ ! -f "$pg_hba" ]; then
         log_error "PostgreSQL config files not found"
         return 1
     fi
@@ -161,16 +179,21 @@ role_shared_services_configure_postgresql() {
         echo "host    all             all             ${subnet}            md5" >> "$pg_hba"
     fi
 
-    # Restart PostgreSQL
-    systemctl restart postgresql
-    systemctl enable postgresql
+    # Start/restart PostgreSQL
+    systemctl enable "$pg_service" 2>/dev/null || true
+    systemctl restart "$pg_service"
 
-    sleep 2
+    for i in $(seq 1 30); do
+        if systemctl is-active --quiet "$pg_service"; then
+            log_success "PostgreSQL configured and running"
+            break
+        fi
+        sleep 1
+    done
 
-    if systemctl is-active --quiet postgresql; then
-        log_success "PostgreSQL configured and running"
-    else
+    if ! systemctl is-active --quiet "$pg_service"; then
         log_error "PostgreSQL failed to start"
+        log_info "Check: journalctl -u ${pg_service} -f"
         return 1
     fi
 

@@ -159,6 +159,13 @@ uninstall_postgresql() {
     os=$(detect_os)
 
     if prompt_confirm "This will stop PostgreSQL, drop the k3s database and user, and remove packages. Continue?"; then
+        # Stop the actual cluster service, not just the meta-service
+        local pg_version
+        pg_version=$(ls /etc/postgresql/ 2>/dev/null | head -1)
+        if [ -n "$pg_version" ]; then
+            systemctl stop "postgresql@${pg_version}-main" 2>/dev/null || true
+            systemctl disable "postgresql@${pg_version}-main" 2>/dev/null || true
+        fi
         systemctl stop postgresql 2>/dev/null || true
         systemctl disable postgresql 2>/dev/null || true
 
