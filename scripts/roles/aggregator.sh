@@ -21,7 +21,7 @@ role_aggregator_collect_config() {
 
     prompt_input "K3s join token" "" K3S_TOKEN
 
-    while [ -z "$K3S_TOKEN" ]; then
+    while [ -z "$K3S_TOKEN" ]; do
         log_error "Token cannot be empty"
         echo ""
         log_info "Get the token from your hub with:"
