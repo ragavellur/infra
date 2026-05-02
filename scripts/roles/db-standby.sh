@@ -151,7 +151,7 @@ role_db_standby_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar DB Standby Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.3.8
+# Version: 3.3.9
 
 ROLE=db-standby
 PRIMARY_DB_IP="${PRIMARY_DB_IP}"

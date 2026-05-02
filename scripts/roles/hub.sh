@@ -230,12 +230,17 @@ role_hub_create_secrets() {
         log_warn "Self-signed TLS certificate created (placeholder)"
     fi
 
-    # Rclone secret (placeholder for history service)
+    # Rclone secret (dummy config - users should replace with real remote config)
     if ! kubectl get secret adsblol-rclone -n bharatradar &>/dev/null; then
-        echo "[placeholder]" | kubectl create secret generic adsblol-rclone \
-            --from-file=rclone.conf=/dev/stdin \
+        kubectl create secret generic adsblol-rclone \
+            --from-literal=rclone.conf="[adsblol]
+type = s3
+provider = Other
+access_key_id = YOUR_ACCESS_KEY
+secret_access_key = YOUR_SECRET_KEY
+endpoint = https://your-s3-endpoint.example.com" \
             -n bharatradar --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
-        log_warn "Rclone secret created with placeholder"
+        log_warn "Rclone secret created with dummy config (update with real S3 credentials)"
     fi
 }
 
@@ -273,11 +278,12 @@ role_hub_deploy_services() {
         local manifest_dir="${SCRIPT_DIR}/../manifests/default/${component}/default"
         if [ -d "$manifest_dir" ]; then
             log_info "Deploying ${component}..."
-            if kustomize build "$manifest_dir" 2>/dev/null | kubectl apply -f - -n bharatradar 2>/dev/null; then
-                log_success "${component} deployed"
-            else
-                log_warn "Failed to deploy ${component} (will retry in fallback)"
-            fi
+            # Filter out ServiceMonitor resources (CRD may not be installed)
+            kustomize build "$manifest_dir" 2>/dev/null \
+                | grep -v 'kind: ServiceMonitor' \
+                | grep -v 'monitoring.coreos.com/v1' \
+                | kubectl apply -f - -n bharatradar 2>&1 || true
+            log_success "${component} deployed"
         fi
     done
 
@@ -458,7 +464,7 @@ role_hub_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Primary Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.3.8
+# Version: 3.3.9
 
 ROLE=hub
 BASE_DOMAIN="${BASE_DOMAIN}"
