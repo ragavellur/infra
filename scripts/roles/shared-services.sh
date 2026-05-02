@@ -253,13 +253,17 @@ role_shared_services_install_influxdb() {
 
     case "$os" in
         debian|ubuntu|raspbian)
-            # Add InfluxData repo
-            local codename
-            codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
-            echo "deb https://repos.influxdata.com/${codename} stable main" > /etc/apt/sources.list.d/influxdata.list
-            wget -qO- https://repos.influxdata.com/influxdata-archive_compat.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/influxdata.gpg
-            apt-get update -qq
-            apt-get install -y -qq influxdb2 || {
+            # Clean stale repo files from prior failed attempts
+            sudo rm -f /etc/apt/sources.list.d/influxdata.list /usr/share/keyrings/influxdb-archive-keyring.gpg
+
+            # Fetch signing key from Ubuntu keyserver (works reliably on all Debian/RPi variants)
+            curl -s "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xDA61C26A0585BD3B" | gpg --dearmor | sudo tee /usr/share/keyrings/influxdb-archive-keyring.gpg > /dev/null
+
+            # Add repo with explicit signed-by
+            echo "deb [signed-by=/usr/share/keyrings/influxdb-archive-keyring.gpg] https://repos.influxdata.com/debian stable main" | sudo tee /etc/apt/sources.list.d/influxdata.list
+
+            sudo apt-get update -qq
+            sudo apt-get install -y influxdb2 || {
                 log_warn "InfluxDB 2.x not available in repo, skipping..."
                 return 0
             }
