@@ -88,11 +88,6 @@ role_hub_collect_config() {
         log_info "Enter your PostgreSQL server details:"
         collect_pg_config "DB"
         log_info "Using external PostgreSQL: ${DB_HOST}:${DB_PORT}/${DB_DBNAME}"
-
-        echo ""
-        log_info "SSH credentials for the PostgreSQL host (for remote management):"
-        prompt_input "PostgreSQL host SSH username" "bharatradar" DB_SSH_USER
-        prompt_input "PostgreSQL host SSH password" "" DB_SSH_PASSWORD
     fi
 
     echo ""
@@ -170,30 +165,35 @@ role_hub_collect_config() {
     fi
 }
 
-# Helper: attempt to clear stale K3s data from PostgreSQL via SSH
+# Helper: clear stale K3s data from PostgreSQL using direct connection
 clear_stale_k3s_data() {
     local db_connection_string="$1"
-    local db_host db_dbname
+    local db_host db_dbname db_dbuser db_dbpass db_dbport
     db_host=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f2 | cut -d":" -f1)
     db_dbname=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f2 | cut -d"/" -f2)
+    db_dbuser=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f1 | cut -d":" -f1)
+    db_dbpass=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f1 | cut -d":" -f2- | cut -d"/" -f1)
+    db_dbport=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f2 | cut -d"/" -f1 | cut -d":" -f2)
 
-    log_info "Clearing stale data from PostgreSQL at ${db_host}/${db_dbname}..."
+    log_info "Connecting to PostgreSQL at ${db_host}:${db_dbport}/${db_dbname}..."
 
-    # Try SSH to the DB host
-    if command -v sshpass &>/dev/null; then
-        if sshpass -p "${DB_SSH_PASSWORD:-}" ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no "${DB_SSH_USER:-bharatradar}@${db_host}" \
-            "sudo -u postgres psql -c 'DROP TABLE kine;' ${db_dbname}" 2>/dev/null; then
-            log_success "Cleared stale data from PostgreSQL"
-            return 0
-        fi
+    # Install psql if not available
+    if ! command -v psql &>/dev/null; then
+        log_info "Installing postgresql-client..."
+        local os
+        os=$(detect_os)
+        case "$os" in
+            debian|ubuntu|raspbian)
+                apt-get install -y -qq postgresql-client 2>/dev/null || true
+                ;;
+            fedora|centos|rhel)
+                dnf install -y -qq postgresql 2>/dev/null || true
+                ;;
+        esac
     fi
 
-    # Try local psql if available
     if command -v psql &>/dev/null; then
-        local db_user db_pass
-        db_user=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f1 | cut -d":" -f1)
-        db_pass=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f1 | cut -d":" -f2-)
-        if PGPASSWORD="$db_pass" psql -h "$db_host" -U "$db_user" -d "$db_dbname" -c 'DROP TABLE kine;' 2>/dev/null; then
+        if PGPASSWORD="$db_dbpass" psql -h "$db_host" -p "$db_dbport" -U "$db_dbuser" -d "$db_dbname" -c 'DROP TABLE IF EXISTS kine;' 2>/dev/null; then
             log_success "Cleared stale data from PostgreSQL"
             return 0
         fi
@@ -605,8 +605,6 @@ DB_PORT="${DB_PORT:-5432}"
 DB_DBNAME="${DB_DBNAME:-k3s}"
 DB_DBUSER="${DB_DBUSER:-k3s}"
 DB_CONNECTION_STRING="${DB_CONNECTION_STRING:-}"
-DB_SSH_USER="${DB_SSH_USER:-bharatradar}"
-DB_SSH_PASSWORD="${DB_SSH_PASSWORD:-}"
 FRP_ENABLED="${FRP_ENABLED}"
 FRP_SERVER="${FRP_SERVER:-}"
 K3S_TOKEN="${K3S_TOKEN:-}"
@@ -673,8 +671,6 @@ role_hub_run() {
         DB_PORT="${DB_PORT:-5432}"
         DB_DBNAME="${DB_DBNAME:-k3s}"
         DB_DBUSER="${DB_DBUSER:-k3s}"
-        DB_SSH_USER="${DB_SSH_USER:-bharatradar}"
-        DB_SSH_PASSWORD="${DB_SSH_PASSWORD:-}"
     fi
 
     role_hub_collect_config
