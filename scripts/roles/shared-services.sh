@@ -314,7 +314,7 @@ role_shared_services_save_config() {
     cat > /etc/bharatradar/db-config.env <<EOF
 # Shared Services Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.0.0
+# Version: 3.0.1
 
 ROLE=shared-services
 DB_LISTEN_IP=${DB_LISTEN_IP}
