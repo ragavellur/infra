@@ -20,7 +20,7 @@
 
 set -eo pipefail
 
-VERSION="2.0.5"
+VERSION="3.0.0"
 
 # Determine script directory
 # When piped (curl | bash), BASH_SOURCE is empty — we do a shallow clone instead
@@ -41,7 +41,7 @@ if [ "$SELF_INSTALL" = true ]; then
         git clone --depth 1 -b main \
             https://github.com/ragavellur/infra.git "${TMPDIR}/infra" 2>/dev/null || {
             log_info "Git clone failed, trying direct download..."
-            for f in scripts/bharatradar-install scripts/helpers/functions.sh scripts/helpers/templating.sh scripts/helpers/verify.sh scripts/helpers/uninstall.sh scripts/roles/frp-server.sh scripts/roles/hub.sh scripts/roles/aggregator.sh scripts/roles/feeder.sh; do
+            for f in scripts/bharatradar-install scripts/helpers/functions.sh scripts/helpers/templating.sh scripts/helpers/verify.sh scripts/helpers/uninstall.sh scripts/helpers/ssh-helpers.sh scripts/helpers/node-ops.sh scripts/roles/frp-server.sh scripts/roles/hub.sh scripts/roles/ha-server.sh scripts/roles/worker.sh scripts/roles/shared-services.sh scripts/roles/db-standby.sh scripts/roles/feeder.sh scripts/roles/keepalived.sh; do
                 mkdir -p "${TMPDIR}/$(dirname "$f")"
                 curl -sL "https://raw.githubusercontent.com/ragavellur/infra/main/${f}" -o "${TMPDIR}/${f}"
             done
@@ -79,6 +79,7 @@ source "${SCRIPT_DIR}/helpers/functions.sh"
 
 # Global configuration (loaded from config.env if present)
 ROLE="${ROLE:-}"
+SUB_ROLE="${SUB_ROLE:-}"
 BASE_DOMAIN="${BASE_DOMAIN:-}"
 READSB_LAT="${READSB_LAT:-18.480718}"
 READSB_LON="${READSB_LON:-73.898235}"
@@ -169,33 +170,105 @@ check_prerequisites() {
     echo ""
 }
 
-# Interactive role selection
-select_role() {
+# Sub-role prompt: K3s Cluster
+select_k3s_subrole() {
     echo ""
-    echo -e "${CYAN}What are you setting up?${NC}"
+    echo -e "${CYAN}K3s Cluster Setup${NC}"
     echo ""
-    echo "  1) FRP Server     - Cloud/VPS with public IP"
-    echo "                      Runs frps, nginx, Let's Encrypt SSL"
+    echo "  1) New Cluster (Primary Hub)   - First server, creates cluster"
+    echo "  2) Join as HA Server           - Second server, shares control plane"
+    echo "  3) Join as Worker              - Agent node, runs pods only"
     echo ""
-    echo "  2) Hub            - K3s server, runs all services"
-    echo "                      Map, API, MLAT, Aggregation"
+
+    local choice
+    while true; do
+        read -rp "Select [1-3]: " choice < /dev/tty
+        case "$choice" in
+            1) ROLE="hub"; SUB_ROLE="primary"; break ;;
+            2) ROLE="ha-server"; SUB_ROLE="secondary"; break ;;
+            3) ROLE="worker"; SUB_ROLE="agent"; break ;;
+            *) echo "Invalid selection. Please enter 1, 2, or 3." ;;
+        esac
+    done
     echo ""
-    echo "  3) Aggregator     - K3s agent, joins existing hub"
-    echo "                      Failover node, runs pods from hub"
+}
+
+# Sub-role prompt: Shared Services
+select_shared_subrole() {
     echo ""
-    echo "  4) Feeder Pi      - RTL-SDR receiver (standalone)"
-    echo "                      readsb + mlat-client, feeds to hub"
+    echo -e "${CYAN}Shared Services Setup${NC}"
+    echo ""
+    echo "  1) Primary DB Setup     - Fresh PostgreSQL/Redis/InfluxDB install"
+    echo "  2) Join as DB Standby   - Streaming replica for failover"
+    echo ""
+
+    local choice
+    while true; do
+        read -rp "Select [1-2]: " choice < /dev/tty
+        case "$choice" in
+            1) ROLE="shared-services"; SUB_ROLE="primary"; break ;;
+            2) ROLE="db-standby"; SUB_ROLE="replica"; break ;;
+            *) echo "Invalid selection. Please enter 1 or 2." ;;
+        esac
+    done
+    echo ""
+}
+
+# Sub-role prompt: Manage
+select_manage_action() {
+    echo ""
+    echo -e "${CYAN}Manage${NC}"
+    echo ""
+    echo "  1) Status             - Show health dashboard"
+    echo "  2) Remove Node        - Remove a node from cluster"
+    echo "  3) Backup             - Backup configuration files"
+    echo "  4) Update             - Update scripts and redeploy"
     echo ""
 
     local choice
     while true; do
         read -rp "Select [1-4]: " choice < /dev/tty
         case "$choice" in
-            1) ROLE="frp-server"; break ;;
-            2) ROLE="hub"; break ;;
-            3) ROLE="aggregator"; break ;;
-            4) ROLE="feeder"; break ;;
+            1) ROLE="status"; break ;;
+            2) ROLE="remove-node"; break ;;
+            3) ROLE="backup"; break ;;
+            4) ROLE="update"; break ;;
             *) echo "Invalid selection. Please enter 1, 2, 3, or 4." ;;
+        esac
+    done
+    echo ""
+}
+
+# Interactive role selection
+select_role() {
+    echo ""
+    echo -e "${CYAN}What would you like to set up?${NC}"
+    echo ""
+    echo "  1) Shared Services  - PostgreSQL, Redis, InfluxDB"
+    echo "                        (Data layer for K3s cluster)"
+    echo ""
+    echo "  2) K3s Cluster      - Kubernetes server or worker"
+    echo "                        (Map, API, MLAT, web services)"
+    echo ""
+    echo "  3) Feeder Pi        - RTL-SDR receiver"
+    echo "                        (Feeds ADS-B data to cluster)"
+    echo ""
+    echo "  4) FRP Server       - Cloud/VPS with public IP"
+    echo "                        (Tunnel for NAT'd clusters)"
+    echo ""
+    echo "  5) Manage           - Status, Remove Node, Backup, Update"
+    echo ""
+
+    local choice
+    while true; do
+        read -rp "Select [1-5]: " choice < /dev/tty
+        case "$choice" in
+            1) select_shared_subrole; return ;;
+            2) select_k3s_subrole; return ;;
+            3) ROLE="feeder"; return ;;
+            4) ROLE="frp-server"; return ;;
+            5) select_manage_action; return ;;
+            *) echo "Invalid selection. Please enter 1, 2, 3, 4, or 5." ;;
         esac
     done
     echo ""
@@ -203,11 +276,31 @@ select_role() {
 
 # Run the selected role
 run_role() {
+    case "$ROLE" in
+        status)
+            cmd_status
+            return
+            ;;
+        remove-node)
+            source "${SCRIPT_DIR}/helpers/ssh-helpers.sh"
+            remove_node_interactive
+            return
+            ;;
+        backup)
+            cmd_backup
+            return
+            ;;
+        update)
+            cmd_update
+            return
+            ;;
+    esac
+
     local role_file="${SCRIPT_DIR}/roles/${ROLE}.sh"
 
     if [ ! -f "$role_file" ]; then
         log_error "Unknown role: ${ROLE}"
-        log_info "Available roles: frp-server, hub, aggregator, feeder"
+        log_info "Available roles: frp-server, hub, ha-server, worker, shared-services, db-standby, feeder"
         exit 1
     fi
 
@@ -253,8 +346,8 @@ cmd_update() {
     log_info "Domain: ${BASE_DOMAIN:-unknown}"
     echo ""
 
-    # For hub nodes, redeploy manifests
-    if [ "${ROLE}" = "hub" ]; then
+    # For hub/ha-server nodes, redeploy manifests
+    if [ "${ROLE}" = "hub" ] || [ "${ROLE}" = "ha-server" ]; then
         log_step "Redeploying manifests..."
 
         if command -v kustomize &>/dev/null; then
@@ -338,38 +431,48 @@ usage() {
 BharatRadar Infrastructure Installer v${VERSION}
 
 Usage:
-  sudo $0 [COMMAND] [OPTIONS]
+  sudo $0 [COMMAND]
 
 Commands:
   (no args)       Run interactive setup wizard
-  frp-server      Set up FRP server on cloud/VPS
-  hub             Set up K3s hub with all services
-  aggregator      Join existing hub as K3s agent
+  shared-services Set up shared data services (PostgreSQL, Redis, InfluxDB)
+  db-standby      Set up PostgreSQL streaming replica
+  hub             Set up Primary Hub (first K3s server, new cluster)
+  ha-server       Join existing cluster as second K3s server (HA)
+  worker          Join existing cluster as K3s agent
   feeder          Set up RTL-SDR receiver
+  frp-server      Set up FRP server on cloud/VPS
   status          Show health dashboard
-  uninstall       Remove BharatRadar components
+  remove-node     Remove a node from cluster (interactive)
   update          Update scripts and redeploy
   backup          Backup configuration files
+  uninstall       Remove BharatRadar components
   help            Show this help message
 
 Online Install:
   curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash
-  curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- frp-server
   curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- hub
+  curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- worker
   curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- feeder
 
 Examples:
-  # Interactive setup
+  # Interactive setup wizard
   sudo $0
 
-  # Non-interactive FRP server setup
-  sudo $0 frp-server
+  # Non-interactive: Primary Hub (new cluster)
+  sudo $0 hub
+
+  # Non-interactive: Join as HA server
+  sudo $0 ha-server
+
+  # Non-interactive: Join as worker node
+  sudo $0 worker
+
+  # Shared services (prompts for primary vs standby)
+  sudo $0 shared-services
 
   # Check cluster status
   sudo $0 status
-
-  # Uninstall everything
-  sudo $0 uninstall
 EOF
 }
 
@@ -380,23 +483,22 @@ main() {
     local command="${1:-}"
 
     case "$command" in
-        frp-server|hub|aggregator|feeder)
+        frp-server|hub|ha-server|worker|shared-services|db-standby|feeder)
             print_banner
             check_prerequisites
             ROLE="$command"
+            # shared-services always prompts for sub-mode
+            if [ "$ROLE" = "shared-services" ] && [ -z "${SUB_ROLE:-}" ]; then
+                select_shared_subrole
+            fi
             run_role
             ;;
-        status)
-            cmd_status
+        status|update|backup)
+            cmd_"$command"
             ;;
-        uninstall)
-            cmd_uninstall "${2:-}"
-            ;;
-        update)
-            cmd_update
-            ;;
-        backup)
-            cmd_backup
+        remove-node)
+            source "${SCRIPT_DIR}/helpers/ssh-helpers.sh"
+            remove_node_interactive
             ;;
         help|--help|-h)
             usage

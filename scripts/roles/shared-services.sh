@@ -1,0 +1,399 @@
+#!/bin/bash
+# Role: Shared Services (PostgreSQL + Redis + InfluxDB on Pi)
+# Installs shared data services used by K3s servers and BharatRadar applications.
+
+set -euo pipefail
+
+role_shared_services_collect_config() {
+    log_step "Shared Services Configuration"
+
+    echo ""
+
+    # If called via CLI (no SUB_ROLE set), prompt for sub-mode
+    if [ -z "${SUB_ROLE:-}" ]; then
+        echo "  1) Primary DB Setup     - Fresh PostgreSQL/Redis/InfluxDB install"
+        echo "  2) Join as DB Standby   - Streaming replica for failover"
+        echo ""
+
+        local choice
+        while true; do
+            read -rp "Select [1-2]: " choice < /dev/tty
+            case "$choice" in
+                1) SUB_ROLE="primary"; break ;;
+                2)
+                    echo ""
+                    log_info "Redirecting to DB Standby setup..."
+                    source "${SCRIPT_DIR}/roles/db-standby.sh"
+                    role_db_standby_run
+                    exit 0
+                    ;;
+                *) echo "Invalid selection. Please enter 1 or 2." ;;
+            esac
+        done
+        echo ""
+    fi
+
+    if [ "${SUB_ROLE:-}" = "replica" ]; then
+        source "${SCRIPT_DIR}/roles/db-standby.sh"
+        role_db_standby_run
+        exit 0
+    fi
+
+    echo "  This installs PostgreSQL, Redis, and InfluxDB on this machine."
+    echo "  K3s servers will use PostgreSQL as their external datastore."
+    echo ""
+
+    # Detect local IP for smart default
+    local detected_ip
+    detected_ip=$(detect_local_ip || echo "192.168.200.1")
+
+    prompt_input "Database listen IP" "$detected_ip" DB_LISTEN_IP
+
+    while ! validate_ip "$DB_LISTEN_IP"; do
+        log_error "Invalid IP address"
+        prompt_input "Database listen IP" "$DB_LISTEN_IP" DB_LISTEN_IP
+    done
+
+    # PostgreSQL port
+    prompt_input "PostgreSQL port" "5432" DB_PORT
+
+    # Generate passwords
+    DB_PASSWORD=$(generate_secret)
+    DB_USER="k3s"
+    DB_NAME="k3s"
+
+    # Redis password
+    REDIS_PASSWORD=$(generate_secret)
+
+    # InfluxDB
+    INFLUXDB_ADMIN_TOKEN=$(generate_secret)
+
+    echo ""
+    log_step "Generated Credentials"
+    echo -e "  ${YELLOW}PostgreSQL password: ${DB_PASSWORD}${NC}"
+    echo -e "  ${YELLOW}Redis password:      ${REDIS_PASSWORD}${NC}"
+    echo -e "  ${YELLOW}InfluxDB admin token: ${INFLUXDB_ADMIN_TOKEN}${NC}"
+    echo ""
+    echo -e "  ${CYAN}Save these! They will be shown again after installation.${NC}"
+    echo ""
+
+    if ! prompt_confirm "Proceed with Shared Services installation?"; then
+        log_info "Installation cancelled."
+        exit 0
+    fi
+}
+
+role_shared_services_install_packages() {
+    log_step "Installing Packages"
+
+    local os
+    os=$(detect_os)
+
+    case "$os" in
+        debian|ubuntu|raspbian)
+            apt-get update -qq
+            apt-get install -y -qq wget gnupg2 lsb-release apt-transport-https ca-certificates
+            ;;
+        *)
+            log_error "Unsupported OS: $os"
+            exit 1
+            ;;
+    esac
+
+    log_success "Base packages installed"
+}
+
+role_shared_services_install_postgresql() {
+    log_step "Installing PostgreSQL"
+
+    if command -v psql &>/dev/null; then
+        log_info "PostgreSQL already installed: $(psql --version 2>/dev/null || echo 'unknown')"
+        return 0
+    fi
+
+    local os
+    os=$(detect_os)
+
+    case "$os" in
+        debian|ubuntu|raspbian)
+            # Use PGDG repo for latest PostgreSQL
+            local codename
+            codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+
+            # Install from distro repo (simpler, works on most)
+            apt-get install -y -qq postgresql postgresql-client || {
+                # Fallback: try PGDG repo
+                echo "deb http://apt.postgresql.org/pub/repos/apt ${codename}-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+                wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg
+                apt-get update -qq
+                apt-get install -y -qq postgresql postgresql-client
+            }
+            ;;
+    esac
+
+    log_success "PostgreSQL installed"
+}
+
+role_shared_services_configure_postgresql() {
+    log_step "Configuring PostgreSQL"
+
+    local pg_conf
+    local pg_hba
+
+    # Find PostgreSQL config paths
+    pg_conf=$(find /etc/postgresql -name postgresql.conf 2>/dev/null | head -1)
+    pg_hba=$(find /etc/postgresql -name pg_hba.conf 2>/dev/null | head -1)
+
+    if [ -z "$pg_conf" ] || [ -z "$pg_hba" ]; then
+        log_error "PostgreSQL config files not found"
+        return 1
+    fi
+
+    # Configure listen addresses
+    sed -i "s/#listen_addresses = 'localhost'/listen_addresses = 'localhost,${DB_LISTEN_IP}'/" "$pg_conf"
+    sed -i "s/listen_addresses = 'localhost'/listen_addresses = 'localhost,${DB_LISTEN_IP}'/" "$pg_conf"
+
+    # Add connection permission for K3s servers
+    local subnet
+    subnet=$(echo "$DB_LISTEN_IP" | sed 's/\.[0-9]*$/\.0\/24/')
+    if ! grep -q "${subnet}" "$pg_hba"; then
+        echo "host    k3s             k3s             ${subnet}            md5" >> "$pg_hba"
+        echo "host    all             all             ${subnet}            md5" >> "$pg_hba"
+    fi
+
+    # Restart PostgreSQL
+    systemctl restart postgresql
+    systemctl enable postgresql
+
+    sleep 2
+
+    if systemctl is-active --quiet postgresql; then
+        log_success "PostgreSQL configured and running"
+    else
+        log_error "PostgreSQL failed to start"
+        return 1
+    fi
+
+    # Create database and user
+    log_info "Creating database and user..."
+    sudo -u postgres psql <<EOF
+CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASSWORD}';
+CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};
+GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};
+ALTER DATABASE ${DB_NAME} SET timezone TO 'UTC';
+EOF
+
+    log_success "Database '${DB_NAME}' and user '${DB_USER}' created"
+}
+
+role_shared_services_install_redis() {
+    log_step "Installing Redis"
+
+    if command -v redis-server &>/dev/null; then
+        log_info "Redis already installed: $(redis-server --version 2>/dev/null || echo 'unknown')"
+        return 0
+    fi
+
+    local os
+    os=$(detect_os)
+
+    case "$os" in
+        debian|ubuntu|raspbian)
+            apt-get install -y -qq redis-server
+            ;;
+    esac
+
+    log_success "Redis installed"
+}
+
+role_shared_services_configure_redis() {
+    log_step "Configuring Redis"
+
+    local redis_conf="/etc/redis/redis.conf"
+
+    if [ ! -f "$redis_conf" ]; then
+        redis_conf="/etc/redis.conf"
+    fi
+
+    if [ ! -f "$redis_conf" ]; then
+        log_warn "Redis config not found, skipping configuration"
+        return 0
+    fi
+
+    # Bind to LAN IP
+    sed -i "s/^bind 127.0.0.1/bind 127.0.0.1 ${DB_LISTEN_IP}/" "$redis_conf"
+
+    # Set password
+    if grep -q "^requirepass" "$redis_conf"; then
+        sed -i "s/^requirepass .*/requirepass ${REDIS_PASSWORD}/" "$redis_conf"
+    else
+        echo "requirepass ${REDIS_PASSWORD}" >> "$redis_conf"
+    fi
+
+    # Disable protected mode for LAN access
+    sed -i "s/^protected-mode yes/protected-mode no/" "$redis_conf"
+
+    # Restart
+    systemctl restart redis-server
+    systemctl enable redis-server
+
+    log_success "Redis configured"
+}
+
+role_shared_services_install_influxdb() {
+    log_step "Installing InfluxDB"
+
+    if command -v influxd &>/dev/null; then
+        log_info "InfluxDB already installed"
+        return 0
+    fi
+
+    local os
+    os=$(detect_os)
+
+    case "$os" in
+        debian|ubuntu|raspbian)
+            # Add InfluxData repo
+            local codename
+            codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+            echo "deb https://repos.influxdata.com/${codename} stable main" > /etc/apt/sources.list.d/influxdata.list
+            wget -qO- https://repos.influxdata.com/influxdata-archive_compat.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/influxdata.gpg
+            apt-get update -qq
+            apt-get install -y -qq influxdb2 || {
+                log_warn "InfluxDB 2.x not available in repo, skipping..."
+                return 0
+            }
+            ;;
+    esac
+
+    log_success "InfluxDB installed"
+}
+
+role_shared_services_configure_influxdb() {
+    log_step "Configuring InfluxDB"
+
+    # Start InfluxDB if not running
+    systemctl enable influxdb 2>/dev/null || true
+    systemctl start influxdb 2>/dev/null || true
+
+    sleep 3
+
+    if systemctl is-active --quiet influxdb 2>/dev/null; then
+        log_info "Setting up InfluxDB initial config..."
+
+        # Setup via CLI (InfluxDB 2.x)
+        if command -v influx &>/dev/null; then
+            influx setup \
+                --username admin \
+                --password "${INFLUXDB_ADMIN_TOKEN}" \
+                --org bharatradar \
+                --bucket metrics \
+                --token "${INFLUXDB_ADMIN_TOKEN}" \
+                --force 2>/dev/null || {
+                    log_warn "InfluxDB setup failed (may already be configured)"
+                }
+        fi
+
+        log_success "InfluxDB configured"
+    else
+        log_warn "InfluxDB service not available (may not be installed for this OS/arch)"
+    fi
+}
+
+role_shared_services_save_config() {
+    log_step "Saving Configuration"
+
+    mkdir -p /etc/bharatradar
+
+    local conn_string="postgres://${DB_USER}:${DB_PASSWORD}@${DB_LISTEN_IP}:${DB_PORT}/${DB_NAME}"
+
+    cat > /etc/bharatradar/db-config.env <<EOF
+# Shared Services Configuration
+# Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+# Version: 3.0.0
+
+ROLE=shared-services
+DB_LISTEN_IP=${DB_LISTEN_IP}
+DB_PORT=${DB_PORT}
+DB_USER=${DB_USER}
+DB_PASSWORD=${DB_PASSWORD}
+DB_NAME=${DB_NAME}
+REDIS_PASSWORD=${REDIS_PASSWORD}
+INFLUXDB_ADMIN_TOKEN=${INFLUXDB_ADMIN_TOKEN}
+
+# Connection string for K3s servers
+DB_CONNECTION_STRING=${conn_string}
+EOF
+
+    chmod 600 /etc/bharatradar/db-config.env
+
+    cat > /etc/bharatradar/config.env <<EOF
+# BharatRadar Shared Services Configuration
+# Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+ROLE=shared-services
+DB_LISTEN_IP=${DB_LISTEN_IP}
+DB_PORT=${DB_PORT}
+DB_USER=${DB_USER}
+DB_NAME=${DB_NAME}
+EOF
+
+    chmod 600 /etc/bharatradar/config.env
+    log_success "Configuration saved to /etc/bharatradar/"
+}
+
+role_shared_services_post_install() {
+    local conn_string="postgres://${DB_USER}:${DB_PASSWORD}@${DB_LISTEN_IP}:${DB_PORT}/${DB_NAME}"
+
+    echo ""
+    echo -e "${GREEN}================================================================${NC}"
+    echo -e "${GREEN}        Shared Services Setup Complete!${NC}"
+    echo -e "${GREEN}================================================================${NC}"
+    echo ""
+    echo -e "  ${CYAN}Services:${NC}"
+    echo "    PostgreSQL: ${DB_LISTEN_IP}:${DB_PORT}"
+    echo "    Redis:      ${DB_LISTEN_IP}:6379"
+    echo "    InfluxDB:   ${DB_LISTEN_IP}:8086"
+    echo ""
+    echo -e "  ${CYAN}Credentials (save these!):${NC}"
+    echo "    PostgreSQL:  user=${DB_USER}  password=${DB_PASSWORD}"
+    echo "    Redis:       password=${REDIS_PASSWORD}"
+    echo "    InfluxDB:    token=${INFLUXDB_ADMIN_TOKEN}"
+    echo ""
+    echo -e "  ${CYAN}K3s Connection String:${NC}"
+    echo "    ${conn_string}"
+    echo ""
+    echo -e "  ${CYAN}Next step: Install Primary Hub with this connection string:${NC}"
+    echo "    curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash"
+    echo "    Select: 2) Primary Hub"
+    echo ""
+    echo -e "  ${CYAN}Useful commands:${NC}"
+    echo "    sudo systemctl status postgresql"
+    echo "    sudo systemctl status redis-server"
+    echo "    sudo systemctl status influxdb"
+    echo "    sudo -u postgres psql -d k3s"
+    echo ""
+    echo -e "${GREEN}================================================================${NC}"
+}
+
+role_shared_services_run() {
+    require_root
+
+    # Load existing config if present
+    if [ -f /etc/bharatradar/db-config.env ]; then
+        source /etc/bharatradar/db-config.env
+        DB_LISTEN_IP="${DB_LISTEN_IP:-}"
+        DB_PORT="${DB_PORT:-5432}"
+    fi
+
+    role_shared_services_collect_config
+    role_shared_services_install_packages
+    role_shared_services_install_postgresql
+    role_shared_services_configure_postgresql
+    role_shared_services_install_redis
+    role_shared_services_configure_redis
+    role_shared_services_install_influxdb
+    role_shared_services_configure_influxdb
+    role_shared_services_save_config
+    role_shared_services_post_install
+}

@@ -170,3 +170,45 @@ generate_token() {
 generate_secret() {
     openssl rand -base64 32 | tr -d '/+='
 }
+
+# Detect the machine's primary LAN IP
+# Tries common interface names, falls back to routing default
+detect_local_ip() {
+    local ip=""
+
+    # Try common interface names first
+    for iface in eth0 enp0s3 eno1 ens33 wlan0; do
+        ip=$(ip -4 addr show "$iface" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+        if [ -n "$ip" ]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+
+    # Fallback: find IP used for default route
+    ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}')
+    if [ -n "$ip" ]; then
+        echo "$ip"
+        return 0
+    fi
+
+    # Last resort: hostname -I first address
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    if [ -n "$ip" ]; then
+        echo "$ip"
+        return 0
+    fi
+
+    return 1
+}
+
+# Validate a PostgreSQL connection string
+# Format: postgres://user:pass@host:port/dbname
+validate_pg_connstring() {
+    local connstr="$1"
+    if [[ "$connstr" =~ ^postgres://[a-zA-Z0-9_]+:[^@]+@[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+/[a-zA-Z0-9_]+$ ]]; then
+        return 0
+    else
+        return 1
+    fi
+}

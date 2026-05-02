@@ -1,11 +1,17 @@
 #!/bin/bash
-# Role: Hub (K3s server, runs all services)
-# Installs K3s, creates secrets, deploys all BharatRadar services.
+# Role: Primary Hub (First K3s server, runs all services)
+# Installs K3s server with optional external PostgreSQL datastore,
+# creates secrets, deploys all BharatRadar services.
 
 set -euo pipefail
 
 role_hub_collect_config() {
-    log_step "Hub Configuration"
+    log_step "Primary Hub Configuration"
+
+    echo ""
+    echo "  This is the first K3s server in your cluster."
+    echo "  It runs all BharatRadar services and serves as the control plane."
+    echo ""
 
     prompt_input "Base domain" "bharat-radar.vellur.in" BASE_DOMAIN
 
@@ -42,6 +48,34 @@ role_hub_collect_config() {
     done
 
     echo ""
+    log_step "Datastore Configuration"
+    echo ""
+    echo "  K3s stores cluster state in a database. Choose one:"
+    echo ""
+    echo "  1) Embedded etcd (simple, single server)"
+    echo "  2) External PostgreSQL (required for HA multi-server)"
+    echo ""
+
+    local ds_choice
+    prompt_select "Datastore type" \
+        "Embedded etcd" \
+        "External PostgreSQL" ds_choice
+
+    if [ "$ds_choice" = "Embedded etcd" ]; then
+        USE_EXTERNAL_DB=false
+        DB_CONNECTION_STRING=""
+        log_info "Using embedded etcd datastore"
+    else
+        USE_EXTERNAL_DB=true
+        prompt_input "PostgreSQL connection string" "" DB_CONNECTION_STRING
+
+        while ! validate_pg_connstring "$DB_CONNECTION_STRING"; do
+            log_error "Invalid format. Expected: postgres://user:pass@host:port/dbname"
+            prompt_input "PostgreSQL connection string" "$DB_CONNECTION_STRING" DB_CONNECTION_STRING
+        done
+    fi
+
+    echo ""
     log_step "FRP Tunnel (Optional)"
     echo ""
     echo "  If your hub is behind a NAT/router and needs public access,"
@@ -73,19 +107,43 @@ role_hub_collect_config() {
     fi
 
     echo ""
+    log_step "Keepalived VIP (Optional)"
+    echo ""
+    echo "  Keepalived provides a floating IP for automatic failover"
+    echo "  when you add a second K3s server later."
+    echo ""
+
+    if prompt_confirm "Set up Keepalived VIP now?"; then
+        KEEPALIVED_ENABLED=true
+        source "${SCRIPT_DIR}/roles/keepalived.sh"
+        keepalived_collect_config
+    else
+        KEEPALIVED_ENABLED=false
+        KEEPALIVED_VIP=""
+    fi
+
+    echo ""
     log_step "Configuration Summary"
     echo -e "  Domain:    ${CYAN}${BASE_DOMAIN}${NC}"
     echo -e "  Lat/Lon:   ${CYAN}${READSB_LAT}, ${READSB_LON}${NC}"
     echo -e "  Timezone:  ${CYAN}${TIMEZONE}${NC}"
     echo -e "  GHCR User: ${CYAN}${GHCR_USERNAME}${NC}"
+    if [ "$USE_EXTERNAL_DB" = true ]; then
+        echo -e "  Datastore: ${CYAN}External PostgreSQL${NC}"
+    else
+        echo -e "  Datastore: ${CYAN}Embedded etcd${NC}"
+    fi
     if [ "$FRP_ENABLED" = true ]; then
         echo -e "  FRP:       ${CYAN}${FRP_SERVER}:7000${NC}"
     else
         echo -e "  FRP:       ${CYAN}disabled${NC}"
     fi
+    if [ "$KEEPALIVED_ENABLED" = true ]; then
+        echo -e "  VIP:       ${CYAN}${KEEPALIVED_VIP}${NC}"
+    fi
     echo ""
 
-    if ! prompt_confirm "Proceed with Hub setup?"; then
+    if ! prompt_confirm "Proceed with Primary Hub setup?"; then
         log_info "Installation cancelled."
         exit 0
     fi
@@ -102,7 +160,18 @@ role_hub_install_k3s() {
     K3S_TOKEN=$(generate_token)
     export K3S_TOKEN
 
-    curl -sfL https://get.k3s.io | sh -
+    local k3s_args=""
+
+    if [ "$USE_EXTERNAL_DB" = true ]; then
+        export K3S_DATASTORE_ENDPOINT="$DB_CONNECTION_STRING"
+        k3s_args="--datastore-endpoint=${DB_CONNECTION_STRING}"
+        log_info "Installing K3s with external datastore..."
+    else
+        k3s_args="--cluster-init"
+        log_info "Installing K3s with embedded etcd..."
+    fi
+
+    curl -sfL https://get.k3s.io | sh -s - server $k3s_args
 
     log_info "Waiting for K3s to be ready..."
     for i in $(seq 1 60); do
@@ -229,10 +298,26 @@ role_hub_deploy_services() {
     if [ "$FRP_ENABLED" = true ]; then
         role_hub_setup_frpc
     fi
+
+    # Install keepalived if enabled
+    if [ "$KEEPALIVED_ENABLED" = true ]; then
+        keepalived_install
+        keepalived_configure
+    fi
 }
 
 role_hub_setup_frpc() {
     log_step "Setting up FRP Client"
+
+    local local_ip
+    local_ip=$(hostname -I | awk '{print $1}')
+
+    # If keepalived is enabled, point FRP to VIP instead of local
+    local frp_local_ip="127.0.0.1"
+    if [ "$KEEPALIVED_ENABLED" = true ]; then
+        frp_local_ip="${KEEPALIVED_VIP}"
+        log_info "FRP will use VIP: ${KEEPALIVED_VIP}"
+    fi
 
     local arch
     arch=$(detect_arch)
@@ -266,7 +351,7 @@ auth.token = "${FRP_TOKEN}"
 [[proxies]]
 name = "web-ui"
 type = "http"
-localIP = "127.0.0.1"
+localIP = "${frp_local_ip}"
 localPort = 80
 customDomains = [
 ${domain_list}    "${BASE_DOMAIN}"
@@ -275,21 +360,21 @@ ${domain_list}    "${BASE_DOMAIN}"
 [[proxies]]
 name = "feed-beast-30004"
 type = "tcp"
-localIP = "127.0.0.1"
+localIP = "${frp_local_ip}"
 localPort = 30004
 remotePort = 30004
 
 [[proxies]]
 name = "feed-beast-30005"
 type = "tcp"
-localIP = "127.0.0.1"
+localIP = "${frp_local_ip}"
 localPort = 30005
 remotePort = 30005
 
 [[proxies]]
 name = "feed-mlat-31090"
 type = "tcp"
-localIP = "127.0.0.1"
+localIP = "${frp_local_ip}"
 localPort = 31090
 remotePort = 31090
 EOF
@@ -334,9 +419,9 @@ role_hub_save_config() {
     mkdir -p /etc/bharatradar
 
     cat > /etc/bharatradar/config.env <<EOF
-# BharatRadar Hub Configuration
+# BharatRadar Primary Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 2.0.0
+# Version: 3.0.0
 
 ROLE=hub
 BASE_DOMAIN=${BASE_DOMAIN}
@@ -344,9 +429,14 @@ READSB_LAT=${READSB_LAT}
 READSB_LON=${READSB_LON}
 TIMEZONE=${TIMEZONE}
 GHCR_USERNAME=${GHCR_USERNAME}
+USE_EXTERNAL_DB=${USE_EXTERNAL_DB}
+DB_CONNECTION_STRING=${DB_CONNECTION_STRING:-}
 FRP_ENABLED=${FRP_ENABLED}
 FRP_SERVER=${FRP_SERVER:-}
 K3S_TOKEN=${K3S_TOKEN:-}
+KEEPALIVED_ENABLED=${KEEPALIVED_ENABLED}
+KEEPALIVED_VIP=${KEEPALIVED_VIP:-}
+KEEPALIVED_PRIORITY=100
 EOF
 
     chmod 600 /etc/bharatradar/config.env
@@ -359,7 +449,7 @@ role_hub_post_install() {
 
     echo ""
     echo -e "${GREEN}================================================================${NC}"
-    echo -e "${GREEN}        Hub Setup Complete!${NC}"
+    echo -e "${GREEN}        Primary Hub Setup Complete!${NC}"
     echo -e "${GREEN}================================================================${NC}"
     echo ""
     echo -e "  ${CYAN}URLs:${NC}"
@@ -369,17 +459,20 @@ role_hub_post_install() {
     echo "    My Map:    https://my.${BASE_DOMAIN}"
     echo "    History:   https://history.${BASE_DOMAIN}"
     echo ""
+    if [ "$KEEPALIVED_ENABLED" = true ]; then
+        echo -e "  ${CYAN}VIP:${NC} ${KEEPALIVED_VIP} (this server is MASTER)"
+    fi
     if [ "$FRP_ENABLED" = true ]; then
         echo -e "  ${CYAN}FRP Tunnel:${NC} ${FRP_SERVER}:7000"
     else
         echo -e "  ${CYAN}Local Access:${NC} http://${local_ip}"
     fi
     echo ""
-    echo -e "  ${CYAN}To add an aggregator node, run on another machine:${NC}"
-    echo "    curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash"
-    echo "    Select: Aggregator"
-    echo "    Hub IP: ${local_ip}"
-    echo "    K3s Token: ${K3S_TOKEN}"
+    echo -e "  ${CYAN}To add more nodes later:${NC}"
+    echo "    HA Server:   curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- ha-server"
+    echo "    Worker Node: curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- worker"
+    echo ""
+    echo -e "  ${CYAN}Cluster token (save this!):${NC} ${K3S_TOKEN}"
     echo ""
     echo -e "  ${CYAN}Useful commands:${NC}"
     echo "    kubectl get pods -n bharatradar"
