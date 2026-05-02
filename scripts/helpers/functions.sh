@@ -78,10 +78,10 @@ prompt_input() {
 
     if [ -n "$default_value" ]; then
         read -rp "${prompt_msg} [${default_value}]: " input < /dev/tty
-        eval "$result_var=\"${input:-$default_value}\""
+        printf -v "$result_var" '%s' "${input:-$default_value}"
     else
         read -rp "${prompt_msg}: " input < /dev/tty
-        eval "$result_var=\"$input\""
+        printf -v "$result_var" '%s' "$input"
     fi
 }
 
@@ -103,7 +103,7 @@ prompt_confirm() {
 
 prompt_select() {
     local prompt_msg="$1"
-    local options=("${@:2:$(( $# - 3 ))}")
+    local options=("${@:2:$(( $# - 2 ))}")
     local result_var="${@: -1}"
     local i=1
     local choice
@@ -117,7 +117,7 @@ prompt_select() {
     while true; do
         read -rp "Select [1-${#options[@]}]: " choice < /dev/tty
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#options[@]}" ]; then
-            eval "$result_var=\"${options[$((choice - 1))]}\""
+            printf -v "$result_var" '%s' "${options[$((choice - 1))]}"
             return 0
         else
             echo "Invalid selection. Please enter a number between 1 and ${#options[@]}."
