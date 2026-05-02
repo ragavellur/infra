@@ -209,6 +209,162 @@ clear_stale_k3s_data() {
     return 0
 }
 
+# Helper: check if PostgreSQL has stale K3s data
+has_stale_k3s_data() {
+    local db_connection_string="$1"
+    local db_host db_dbname db_dbuser db_dbpass db_dbport
+    db_host=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f2 | cut -d":" -f1)
+    db_dbname=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f2 | cut -d"/" -f2)
+    db_dbuser=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f1 | cut -d":" -f1)
+    db_dbpass=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f1 | cut -d":" -f2- | cut -d"/" -f1)
+    db_dbport=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f2 | cut -d"/" -f1 | cut -d":" -f2)
+
+    if ! command -v psql &>/dev/null; then
+        return 1
+    fi
+
+    local result
+    result=$(PGPASSWORD="$db_dbpass" psql -h "$db_host" -p "$db_dbport" -U "$db_dbuser" -d "$db_dbname" -t -c "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'kine');" 2>/dev/null | tr -d ' ')
+    [ "$result" = "t" ]
+}
+
+# Helper: stop k3s, clear stale data, restart and wait
+recover_from_stale_data() {
+    local db_connection_string="$1"
+
+    log_warn "K3s bootstrap failed: stale data in PostgreSQL."
+    log_info "The database contains data from a previous installation with a different token."
+    echo ""
+
+    if prompt_confirm "Clear stale data and restart K3s?"; then
+        clear_stale_k3s_data "$db_connection_string"
+
+        systemctl stop k3s 2>/dev/null || true
+        sleep 2
+
+        log_info "Restarting K3s..."
+        systemctl restart k3s
+
+        log_info "Waiting for K3s to be ready..."
+        for i in $(seq 1 60); do
+            if kubectl cluster-info &>/dev/null 2>&1; then
+                log_success "K3s server is ready"
+                return 0
+            fi
+            sleep 2
+        done
+        log_error "K3s still not ready after restart"
+        log_info "Check logs: journalctl -u k3s.service -e"
+        exit 1
+    else
+        log_error "K3s cannot start with stale data"
+        exit 1
+    fi
+}
+
+role_hub_install_k3s() {
+
+    local k3s_installed=false
+    if command -v k3s &>/dev/null; then
+        k3s_installed=true
+    fi
+
+    if [ "$k3s_installed" = true ] && kubectl cluster-info &>/dev/null 2>&1; then
+        log_info "K3s already installed and running"
+        return 0
+    fi
+
+    # If K3s is installed but not running, diagnose the failure
+    if [ "$k3s_installed" = true ]; then
+        local svc_status
+        svc_status=$(systemctl is-active k3s 2>/dev/null || echo "inactive")
+        if [ "$svc_status" = "activating" ] || [ "$svc_status" = "failed" ]; then
+            local journal_output
+            journal_output=$(journalctl -u k3s.service --no-pager -n 20 2>/dev/null || true)
+            if echo "$journal_output" | grep -q "bootstrap data already found and encrypted with different token"; then
+                recover_from_stale_data "$DB_CONNECTION_STRING"
+            fi
+        fi
+    fi
+
+    # Pre-install check: detect stale data in PostgreSQL before installing K3s
+    if [ "$USE_EXTERNAL_DB" = true ]; then
+        # Install psql if needed for the pre-flight check
+        if ! command -v psql &>/dev/null; then
+            log_info "Installing postgresql-client for pre-flight check..."
+            local os
+            os=$(detect_os)
+            case "$os" in
+                debian|ubuntu|raspbian)
+                    apt-get install -y -qq postgresql-client 2>/dev/null || true
+                    ;;
+                fedora|centos|rhel)
+                    dnf install -y -qq postgresql 2>/dev/null || true
+                    ;;
+            esac
+        fi
+
+        if command -v psql &>/dev/null && has_stale_k3s_data "$DB_CONNECTION_STRING"; then
+            log_warn "Stale K3s data found in PostgreSQL database."
+            log_info "The database contains data from a previous installation with a different token."
+            echo ""
+
+            if prompt_confirm "Clear stale data before installing K3s?"; then
+                clear_stale_k3s_data "$DB_CONNECTION_STRING"
+            else
+                log_error "K3s install will likely fail with stale data"
+                exit 1
+            fi
+        fi
+    fi
+
+    K3S_TOKEN=$(generate_token)
+    export K3S_TOKEN
+
+    local k3s_args=()
+
+    if [ "$USE_EXTERNAL_DB" = true ]; then
+        export K3S_DATASTORE_ENDPOINT="$DB_CONNECTION_STRING"
+        k3s_args=("--datastore-endpoint=${DB_CONNECTION_STRING}")
+        log_info "Installing K3s with external datastore..."
+    else
+        k3s_args=("--cluster-init")
+        log_info "Installing K3s with embedded etcd..."
+    fi
+
+    # Use K3S_SKIP_START to prevent installer from auto-starting the service
+    # This lets us clear stale data if it appears, then start manually
+    curl -sfL https://get.k3s.io | sh -s - server "${k3s_args[@]}" --install-only
+
+    log_info "Starting K3s..."
+    systemctl start k3s
+
+    log_info "Waiting for K3s to be ready..."
+    for i in $(seq 1 60); do
+        if kubectl cluster-info &>/dev/null 2>&1; then
+            log_success "K3s server is ready"
+            return 0
+        fi
+
+        # Check for bootstrap token mismatch every 10 iterations
+        if [ $(( i % 10 )) -eq 0 ] && [ "$USE_EXTERNAL_DB" = true ]; then
+            local journal_output
+            journal_output=$(journalctl -u k3s.service --no-pager -n 5 2>/dev/null || true)
+            if echo "$journal_output" | grep -q "bootstrap data already found and encrypted with different token"; then
+                recover_from_stale_data "$DB_CONNECTION_STRING"
+                i=0
+                continue
+            fi
+        fi
+
+        sleep 2
+    done
+
+    log_error "K3s failed to become ready"
+    log_info "Check logs: journalctl -u k3s.service -e"
+    exit 1
+}
+
 # Helper: stop k3s, clear stale data, restart and wait
 recover_from_stale_data() {
     local db_connection_string="$1"
@@ -588,7 +744,7 @@ role_hub_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Primary Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.4.4
+# Version: 3.4.6
 
 ROLE=hub
 BASE_DOMAIN="${BASE_DOMAIN}"
