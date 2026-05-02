@@ -1,5 +1,18 @@
 resources:
 - ../base
 - flux.yaml
+namePrefix: api-
 commonLabels:
   name: api
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+- name: index
+  files:
+  - index.html
+- name: nginx-conf
+  files:
+  - nginx.conf=default.conf
+- name: api-salts
+  literals:
+  - ADSBLOL_API_SALT_MY=3e4653f16dc7b14442c3c9898cf752765e6070b9bebf229d22a2e8abfb0947e4ec811f75bfc3710647ea825a0ab620541a6a90fe806f714bd92ffb9f93aa718eaf08cd8d1ff66dfb8f34c4e780861a53906ba14463d1477ab93846afd3ebea33d7ce2fe1b7faf9820888ee73063b59718119876bd86d8412b7ddc71d792e9802

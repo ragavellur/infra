@@ -69,3 +69,14 @@ All built with `--platform linux/amd64,linux/arm64` and pushed to `ghcr.io/bhara
 - UUID tracking enabled via custom docker-tar1090-uuid image (rId in aircraft.json)
 - MLAT map has nginx reverse proxy for `/api/0/mlat-server/` endpoints
 - Peers: {} on MLAT map is normal with single feeder (requires multiple receivers)
+- `my.bharat-radar.vellur.in/` redirects to `map.bharat-radar.vellur.in/?filter_uuid=<uuid>` based on IP lookup from Redis `beast:clients`
+- API image built from `build/api/` which patches upstream `ghcr.io/adsblol/api` at runtime
+
+## TODO / Future Enhancements
+- **Remove FRP tunnel**: Move feeder connections to direct cluster IPs or use a proper load balancer. This will fix IP-based feeder identification on `my.bharat-radar.vellur.in`.
+- **Feeder self-registration script**: A bash script for feeders to register their UUID without DNS access:
+  1. Script runs on feeder Pi
+  2. Calls `/api/0/my` to get UUIDs of all feeders
+  3. Matches local MAC or hostname to UUID
+  4. Prints personalized map URL (`map.bharat-radar.vellur.in/?filter_uuid=<uuid>`)
+  5. Useful if FRP stays long-term or for feeders behind CGNAT/proxies

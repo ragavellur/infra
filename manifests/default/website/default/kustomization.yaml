@@ -1,0 +1,17 @@
+resources:
+- ../base
+namePrefix: website-
+namespace: bharatradar
+commonLabels:
+  app: website
+  stage: prod
+
+patches:
+- target:
+    kind: Deployment
+    name: website
+  patch: |-
+    - op: add
+      path: /spec/template/spec/imagePullSecrets
+      value:
+        - name: ghcr-secret

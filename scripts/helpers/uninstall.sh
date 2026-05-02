@@ -127,7 +127,6 @@ uninstall_nginx() {
 uninstall_feeder() {
     log_step "Uninstalling Feeder Services"
 
-    # Stop and remove bharat-feeder
     if systemctl is-active --quiet bharat-feeder 2>/dev/null; then
         systemctl stop bharat-feeder 2>/dev/null || true
         systemctl disable bharat-feeder 2>/dev/null || true
@@ -136,7 +135,6 @@ uninstall_feeder() {
         log_info "bharat-feeder service removed"
     fi
 
-    # Stop and remove bharat-mlat
     if systemctl is-active --quiet bharat-mlat 2>/dev/null; then
         systemctl stop bharat-mlat 2>/dev/null || true
         systemctl disable bharat-mlat 2>/dev/null || true
@@ -145,13 +143,149 @@ uninstall_feeder() {
         log_info "bharat-mlat service removed"
     fi
 
-    # Remove UUID file
     if [ -f /etc/bharat-radar-id ]; then
         rm -f /etc/bharat-radar-id
         log_info "UUID file removed"
     fi
 
     log_success "Feeder services uninstalled"
+}
+
+# Uninstall PostgreSQL
+uninstall_postgresql() {
+    log_step "Uninstalling PostgreSQL"
+
+    local os
+    os=$(detect_os)
+
+    if prompt_confirm "This will stop PostgreSQL, drop the k3s database and user, and remove packages. Continue?"; then
+        systemctl stop postgresql 2>/dev/null || true
+        systemctl disable postgresql 2>/dev/null || true
+
+        if command -v psql &>/dev/null; then
+            sudo -u postgres psql -c "DROP DATABASE IF EXISTS k3s;" 2>/dev/null || true
+            sudo -u postgres psql -c "DROP USER IF EXISTS k3s;" 2>/dev/null || true
+        fi
+
+        case "$os" in
+            debian|ubuntu|raspbian)
+                apt-get remove -y -qq postgresql postgresql-client 2>/dev/null || true
+                apt-get autoremove -y -qq 2>/dev/null || true
+                ;;
+            fedora|centos|rhel)
+                dnf remove -y postgresql-server postgresql 2>/dev/null || true
+                ;;
+        esac
+
+        if prompt_confirm "Also remove PostgreSQL data directory?"; then
+            rm -rf /var/lib/postgresql/*
+            log_info "PostgreSQL data removed"
+        fi
+
+        log_success "PostgreSQL uninstalled"
+    fi
+}
+
+# Uninstall Redis
+uninstall_redis() {
+    log_step "Uninstalling Redis"
+
+    local os
+    os=$(detect_os)
+
+    if prompt_confirm "This will remove Redis. Continue?"; then
+        systemctl stop redis-server 2>/dev/null || true
+        systemctl disable redis-server 2>/dev/null || true
+
+        case "$os" in
+            debian|ubuntu|raspbian)
+                apt-get remove -y -qq redis-server 2>/dev/null || true
+                apt-get autoremove -y -qq 2>/dev/null || true
+                ;;
+            fedora|centos|rhel)
+                dnf remove -y redis 2>/dev/null || true
+                ;;
+        esac
+
+        log_success "Redis uninstalled"
+    fi
+}
+
+# Uninstall InfluxDB
+uninstall_influxdb() {
+    log_step "Uninstalling InfluxDB"
+
+    local os
+    os=$(detect_os)
+
+    if prompt_confirm "This will remove InfluxDB and all data. Continue?"; then
+        systemctl stop influxdb 2>/dev/null || true
+        systemctl disable influxdb 2>/dev/null || true
+
+        case "$os" in
+            debian|ubuntu|raspbian)
+                apt-get remove -y -qq influxdb2 2>/dev/null || true
+                apt-get autoremove -y -qq 2>/dev/null || true
+                ;;
+            fedora|centos|rhel)
+                dnf remove -y influxdb2 2>/dev/null || true
+                ;;
+        esac
+
+        if prompt_confirm "Also remove InfluxDB data directory?"; then
+            rm -rf /var/lib/influxdb2/*
+            log_info "InfluxDB data removed"
+        fi
+
+        log_success "InfluxDB uninstalled"
+    fi
+}
+
+# Uninstall shared services (PostgreSQL + Redis + InfluxDB)
+uninstall_shared_services() {
+    log_step "Uninstalling Shared Services"
+
+    if prompt_confirm "Remove PostgreSQL?"; then
+        uninstall_postgresql
+    fi
+
+    if prompt_confirm "Remove Redis?"; then
+        uninstall_redis
+    fi
+
+    if prompt_confirm "Remove InfluxDB?"; then
+        uninstall_influxdb
+    fi
+
+    if prompt_confirm "Remove all shared data directories (/var/lib/postgresql, /var/lib/redis, /var/lib/influxdb2)?"; then
+        rm -rf /var/lib/postgresql/* /var/lib/redis/* /var/lib/influxdb2/*
+        log_info "All shared data directories removed"
+    fi
+}
+
+# Uninstall keepalived
+uninstall_keepalived() {
+    log_step "Uninstalling Keepalived"
+
+    systemctl stop keepalived 2>/dev/null || true
+    systemctl disable keepalived 2>/dev/null || true
+
+    if [ -f /etc/keepalived/keepalived.conf ]; then
+        rm -f /etc/keepalived/keepalived.conf
+    fi
+
+    local os
+    os=$(detect_os)
+    case "$os" in
+        debian|ubuntu|raspbian)
+            apt-get remove -y -qq keepalived 2>/dev/null || true
+            ;;
+        fedora|centos|rhel)
+            dnf remove -y keepalived 2>/dev/null || true
+            ;;
+    esac
+
+    log_success "Keepalived uninstalled"
 }
 
 # Remove BharatRadar config directory
@@ -202,9 +336,13 @@ uninstall_all() {
             uninstall_nginx
             uninstall_certbot
             ;;
-        hub)
+        hub|ha-server)
             uninstall_frpc
+            uninstall_keepalived 2>/dev/null || true
             uninstall_k3s_server
+            ;;
+        worker)
+            uninstall_k3s_agent
             ;;
         aggregator)
             uninstall_k3s_agent
@@ -212,6 +350,9 @@ uninstall_all() {
         feeder)
             uninstall_feeder
             uninstall_frpc 2>/dev/null || true
+            ;;
+        shared-services|db-standby)
+            uninstall_shared_services
             ;;
         *)
             # Unknown role: ask what to remove
@@ -236,6 +377,14 @@ uninstall_all() {
 
             if prompt_confirm "Remove feeder services?"; then
                 uninstall_feeder
+            fi
+
+            if prompt_confirm "Remove shared data services (PostgreSQL, Redis, InfluxDB)?"; then
+                uninstall_shared_services
+            fi
+
+            if prompt_confirm "Remove keepalived?"; then
+                uninstall_keepalived
             fi
 
             if prompt_confirm "Remove nginx?"; then

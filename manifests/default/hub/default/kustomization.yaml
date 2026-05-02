@@ -11,7 +11,7 @@ patches:
   patch: |-
     - op: replace
       path: /spec/template/spec/containers/0/args
-      value: ["--net-only", "--net", "--net-receiver-id", "--net-connector=ingest-readsb,30005,beast_in", "--net-bi-port=30004", "--net-bo-port=30005", "--device-type=none", "--max-range=99999"]
+      value: ["--net-only", "--net", "--net-receiver-id", "--net-connector=ingest-readsb,30005,beast_in", "--net-bi-port=30004", "--net-bo-port=30005", "--device-type=none", "--max-range=99999", "--write-json=/run/readsb", "--write-receiver-id-json"]
     - op: replace
       path: /spec/template/spec/containers/0/livenessProbe
       value: null

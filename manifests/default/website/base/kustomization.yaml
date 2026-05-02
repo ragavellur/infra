@@ -1,0 +1,4 @@
+resources:
+- website.yaml
+commonLabels:
+  app: website

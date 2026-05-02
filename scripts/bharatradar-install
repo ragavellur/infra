@@ -496,6 +496,9 @@ main() {
         status|update|backup)
             cmd_"$command"
             ;;
+        uninstall)
+            cmd_uninstall "${2:-}"
+            ;;
         remove-node)
             source "${SCRIPT_DIR}/helpers/ssh-helpers.sh"
             remove_node_interactive

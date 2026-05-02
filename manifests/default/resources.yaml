@@ -67,19 +67,19 @@ metadata:
         return 302 https://discord.gg/3wPfmyNFRq;
       }
       location /todo {
-        return 302 https://github.com/orgs/adsblol/projects/1/views/1;
+        return 302 https://github.com/ragavellur/infra/issues;
       }
       location /feed {
-        return 302 https://github.com/adsblol/feed;
+        return 302 https://github.com/ragavellur/infra?tab=readme-ov-file#feeder;
       }
       location /stats {
-        return 302 https://grafana.adsb.lol/public-dashboards/4fcdab6726f34960b73be95ecb74386e;
+        return 302 https://bharat-radar.vellur.in;
       }
       location /metrics {
-        return 200 "lol";
+        return 200 "ok";
       }
       location /graphs1090 {
-        return 302 https://grafana.adsb.lol/public-dashboards/4fcdab6726f34960b73be95ecb74386e;
+        return 302 https://bharat-radar.vellur.in;
       }
 spec:
   tls:
@@ -94,7 +94,7 @@ spec:
         pathType: Prefix
         backend:
           service:
-            name: api
+            name: website-website
             port:
               number: 80
 ---
@@ -129,7 +129,7 @@ metadata:
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
     nginx.ingress.kubernetes.io/configuration-snippet: |
       location /graphs1090 {
-        return 302 https://grafana.adsb.lol/public-dashboards/4fcdab6726f34960b73be95ecb74386e;
+        return 302 https://bharat-radar.vellur.in;
       }
       location /globeRates.json { return 200 "{\"refresh\": 500}" ;}
 spec:
@@ -179,6 +179,52 @@ data:
         root /usr/share/nginx/html;
       }
     }
+---
+kind: Ingress
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: api
+  annotations:
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+spec:
+  tls:
+  - hosts:
+    - api.bharat-radar.vellur.in
+    secretName: adsblol-tls
+  rules:
+  - host: api.bharat-radar.vellur.in
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api
+            port:
+              name: http
+---
+kind: Ingress
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: my
+  annotations:
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+spec:
+  tls:
+  - hosts:
+    - my.bharat-radar.vellur.in
+    secretName: adsblol-tls
+  rules:
+  - host: my.bharat-radar.vellur.in
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api
+            port:
+              name: api-internal
 ---
 kind: Ingress
 apiVersion: networking.k8s.io/v1

@@ -13,7 +13,7 @@ patches:
   patch: |-
     - op: replace
       path: /spec/template/spec/containers/0/args
-      value: ["--net-only", "--net", "--net-ingest", "--net-receiver-id", "--net-bi-port=30004", "--net-bo-port=30005", "--net-bind-address=0.0.0.0", "--device-type=none", "--max-range=99999"]
+      value: ["--net-only", "--net", "--net-ingest", "--net-receiver-id", "--net-bi-port=30004", "--net-bo-port=30005", "--net-bind-address=0.0.0.0", "--device-type=none", "--max-range=99999", "--write-json=/run/readsb", "--write-receiver-id-json"]
     - op: replace
       path: /spec/template/spec/containers/0/livenessProbe
       value: null
