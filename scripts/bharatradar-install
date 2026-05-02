@@ -18,15 +18,60 @@
 # Online install:
 #   curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash
 
-set -euo pipefail
+set -eo pipefail
 
 VERSION="2.0.0"
 
-# Determine script directory (works for both local and piped execution)
-if [ -n "${BASH_SOURCE[0]}" ]; then
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-else
-    SCRIPT_DIR="/opt/bharatradar/scripts"
+# Determine script directory
+# When piped (curl | bash), BASH_SOURCE is empty — we do a shallow clone instead
+SELF_INSTALL=false
+if [ -z "${BASH_SOURCE[0]+x}" ] || [ -z "${BASH_SOURCE[0]}" ]; then
+    SELF_INSTALL=true
+fi
+
+if [ "$SELF_INSTALL" = true ]; then
+    log_info() { echo -e "\033[0;34m[INFO]\033[0m $1"; }
+    log_step() { echo -e "\n\033[0;36m>>> $1\033[0m"; }
+
+    log_step "Downloading installer..."
+    TMPDIR=$(mktemp -d /tmp/bharatradar-install.XXXXXX)
+    git clone --depth 1 --sparse -b main \
+        https://github.com/ragavellur/infra.git "${TMPDIR}/infra" 2>/dev/null || {
+        # Fallback: full shallow clone if sparse not supported
+        git clone --depth 1 -b main \
+            https://github.com/ragavellur/infra.git "${TMPDIR}/infra" 2>/dev/null || {
+            log_info "Git clone failed, trying direct download..."
+            for f in scripts/bharatradar-install scripts/helpers/functions.sh scripts/helpers/templating.sh scripts/helpers/verify.sh scripts/helpers/uninstall.sh scripts/roles/frp-server.sh scripts/roles/hub.sh scripts/roles/aggregator.sh scripts/roles/feeder.sh; do
+                mkdir -p "${TMPDIR}/$(dirname "$f")"
+                curl -sL "https://raw.githubusercontent.com/ragavellur/infra/main/${f}" -o "${TMPDIR}/${f}"
+            done
+            # Download manifests for hub role
+            curl -sL "https://github.com/ragavellur/infra/archive/refs/heads/main.tar.gz" | tar xz -C "${TMPDIR}" --strip-components=1 "infra-main/manifests" 2>/dev/null || true
+            chmod +x "${TMPDIR}/scripts/bharatradar-install"
+            exec bash "${TMPDIR}/scripts/bharatradar-install" "$@"
+        }
+    }
+
+    # If sparse clone succeeded, set sparse-checkout
+    if [ -d "${TMPDIR}/infra/.git" ]; then
+        cd "${TMPDIR}/infra"
+        git sparse-checkout init --cone 2>/dev/null || true
+        git sparse-checkout set scripts manifests 2>/dev/null || true
+        git checkout 2>/dev/null || true
+        cd - >/dev/null
+    fi
+
+    SCRIPT_DIR="${TMPDIR}/infra/scripts"
+    export SCRIPT_DIR INSTALL_TMPDIR="$TMPDIR"
+    chmod +x "${SCRIPT_DIR}/bharatradar-install"
+    exec bash "${SCRIPT_DIR}/bharatradar-install" "$@"
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Clean up temp directory from self-install when done
+if [ -n "${INSTALL_TMPDIR:-}" ] && [ -d "${INSTALL_TMPDIR}" ]; then
+    trap 'rm -rf "${INSTALL_TMPDIR}"' EXIT
 fi
 
 # Source helper functions
