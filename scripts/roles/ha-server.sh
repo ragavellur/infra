@@ -13,13 +13,11 @@ role_ha_server_collect_config() {
     echo "  If the Primary Hub fails, this server keeps the cluster running."
     echo ""
 
-    # DB connection string
-    prompt_input "PostgreSQL connection string (from Shared Services)" "" DB_CONNECTION_STRING
-
-    while ! validate_pg_connstring "$DB_CONNECTION_STRING"; do
-        log_error "Invalid format. Expected: postgres://user:pass@host:port/dbname"
-        prompt_input "PostgreSQL connection string" "$DB_CONNECTION_STRING" DB_CONNECTION_STRING
-    done
+    # PostgreSQL server details
+    echo ""
+    log_info "Enter your PostgreSQL server details:"
+    collect_pg_config "DB"
+    log_info "Using PostgreSQL: ${DB_HOST}:${DB_PORT}/${DB_DBNAME}"
 
     # Cluster token from primary
     prompt_input "K3s cluster token (from Primary Hub)" "" K3S_CLUSTER_TOKEN
@@ -120,10 +118,14 @@ role_ha_server_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar HA Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.1.0
+# Version: 3.2.0
 
 ROLE=ha-server
 BASE_DOMAIN="${BASE_DOMAIN}"
+DB_HOST="${DB_HOST}"
+DB_PORT="${DB_PORT}"
+DB_DBNAME="${DB_DBNAME}"
+DB_DBUSER="${DB_DBUSER}"
 DB_CONNECTION_STRING="${DB_CONNECTION_STRING}"
 K3S_CLUSTER_TOKEN="${K3S_CLUSTER_TOKEN}"
 PRIMARY_HUB_IP="${PRIMARY_HUB_IP}"
@@ -171,6 +173,10 @@ role_ha_server_run() {
         source /etc/bharatradar/config.env
         BASE_DOMAIN="${BASE_DOMAIN:-}"
         DB_CONNECTION_STRING="${DB_CONNECTION_STRING:-}"
+        DB_HOST="${DB_HOST:-}"
+        DB_PORT="${DB_PORT:-5432}"
+        DB_DBNAME="${DB_DBNAME:-k3s}"
+        DB_DBUSER="${DB_DBUSER:-k3s}"
         K3S_CLUSTER_TOKEN="${K3S_CLUSTER_TOKEN:-}"
         PRIMARY_HUB_IP="${PRIMARY_HUB_IP:-}"
     fi

@@ -202,6 +202,30 @@ detect_local_ip() {
     return 1
 }
 
+# Collect PostgreSQL connection details and build connection string
+collect_pg_config() {
+    local prefix="${1:-DB}"
+
+    prompt_input "PostgreSQL host IP" "" "${prefix}_HOST"
+    while ! validate_ip "${!prefix_HOST}"; do
+        log_error "Invalid IP address"
+        prompt_input "PostgreSQL host IP" "${!prefix_HOST}" "${prefix}_HOST"
+    done
+
+    prompt_input "PostgreSQL port" "5432" "${prefix}_PORT"
+    prompt_input "PostgreSQL database name" "k3s" "${prefix}_DBNAME"
+    prompt_input "PostgreSQL username" "k3s" "${prefix}_DBUSER"
+    prompt_input "PostgreSQL password" "" "${prefix}_DBPASS"
+
+    while [ -z "${!prefix_DBPASS}" ]; do
+        log_error "Password cannot be empty"
+        prompt_input "PostgreSQL password" "" "${prefix}_DBPASS"
+    done
+
+    local conn_string="postgres://${!prefix_DBUSER}:${!prefix_DBPASS}@${!prefix_HOST}:${!prefix_PORT}/${!prefix_DBNAME}"
+    eval "${prefix}_CONNECTION_STRING=\"${conn_string}\""
+}
+
 # Validate a PostgreSQL connection string
 # Format: postgres://user:pass@host:port/dbname
 validate_pg_connstring() {

@@ -63,12 +63,10 @@ role_hub_collect_config() {
         log_info "Using embedded etcd datastore"
     else
         USE_EXTERNAL_DB=true
-        prompt_input "PostgreSQL connection string" "" DB_CONNECTION_STRING
-
-        while ! validate_pg_connstring "$DB_CONNECTION_STRING"; do
-            log_error "Invalid format. Expected: postgres://user:pass@host:port/dbname"
-            prompt_input "PostgreSQL connection string" "$DB_CONNECTION_STRING" DB_CONNECTION_STRING
-        done
+        echo ""
+        log_info "Enter your PostgreSQL server details:"
+        collect_pg_config "DB"
+        log_info "Using external PostgreSQL: ${DB_HOST}:${DB_PORT}/${DB_DBNAME}"
     fi
 
     echo ""
@@ -417,7 +415,7 @@ role_hub_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Primary Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.1.0
+# Version: 3.2.0
 
 ROLE=hub
 BASE_DOMAIN="${BASE_DOMAIN}"
@@ -426,6 +424,10 @@ READSB_LON="${READSB_LON}"
 TIMEZONE="${TIMEZONE}"
 GHCR_USERNAME="${GHCR_USERNAME}"
 USE_EXTERNAL_DB="${USE_EXTERNAL_DB}"
+DB_HOST="${DB_HOST:-}"
+DB_PORT="${DB_PORT:-5432}"
+DB_DBNAME="${DB_DBNAME:-k3s}"
+DB_DBUSER="${DB_DBUSER:-k3s}"
 DB_CONNECTION_STRING="${DB_CONNECTION_STRING:-}"
 FRP_ENABLED="${FRP_ENABLED}"
 FRP_SERVER="${FRP_SERVER:-}"
@@ -486,6 +488,10 @@ role_hub_run() {
         BASE_DOMAIN="${BASE_DOMAIN:-}"
         READSB_LAT="${READSB_LAT:-}"
         READSB_LON="${READSB_LON:-}"
+        DB_HOST="${DB_HOST:-}"
+        DB_PORT="${DB_PORT:-5432}"
+        DB_DBNAME="${DB_DBNAME:-k3s}"
+        DB_DBUSER="${DB_DBUSER:-k3s}"
     fi
 
     role_hub_collect_config
