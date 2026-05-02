@@ -347,9 +347,9 @@ role_hub_install_k3s() {
         log_info "Installing K3s with embedded etcd..."
     fi
 
-    # Use K3S_SKIP_START to prevent installer from auto-starting the service
+    # Use INSTALL_K3S_SKIP_START to prevent installer from auto-starting the service
     # This lets us clear stale data if it appears, then start manually
-    curl -sfL https://get.k3s.io | sh -s - server "${k3s_args[@]}" --install-only
+    INSTALL_K3S_SKIP_START=true curl -sfL https://get.k3s.io | sh -s - server "${k3s_args[@]}"
 
     log_info "Starting K3s..."
     systemctl start k3s
