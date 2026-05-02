@@ -11,7 +11,7 @@ role_shared_services_collect_config() {
 
     # If called via CLI (no SUB_ROLE set), prompt for sub-mode
     if [ -z "${SUB_ROLE:-}" ]; then
-        echo "  1) Primary DB Setup     - Fresh PostgreSQL/Redis/InfluxDB install"
+        echo "  1) Primary DB Setup     - Fresh PostgreSQL/Redis/InfluxDB/MinIO install"
         echo "  2) Join as DB Standby   - Streaming replica for failover"
         echo ""
 
@@ -39,8 +39,9 @@ role_shared_services_collect_config() {
         exit 0
     fi
 
-    echo "  This installs PostgreSQL, Redis, and InfluxDB on this machine."
+    echo "  This installs PostgreSQL, Redis, InfluxDB, and MinIO on this machine."
     echo "  K3s servers will use PostgreSQL as their external datastore."
+    echo "  History service will use MinIO as its S3-compatible storage backend."
     echo ""
 
     # Detect local IP for smart default
@@ -68,11 +69,16 @@ role_shared_services_collect_config() {
     # InfluxDB
     INFLUXDB_ADMIN_TOKEN=$(generate_secret)
 
+    # MinIO
+    MINIO_ROOT_USER="minioadmin"
+    MINIO_ROOT_PASSWORD=$(generate_secret)
+
     echo ""
     log_step "Generated Credentials"
     echo -e "  ${YELLOW}PostgreSQL password: ${DB_PASSWORD}${NC}"
     echo -e "  ${YELLOW}Redis password:      ${REDIS_PASSWORD}${NC}"
     echo -e "  ${YELLOW}InfluxDB admin token: ${INFLUXDB_ADMIN_TOKEN}${NC}"
+    echo -e "  ${YELLOW}MinIO password:      ${MINIO_ROOT_PASSWORD}${NC}"
     echo ""
     echo -e "  ${CYAN}Save these! They will be shown again after installation.${NC}"
     echo ""
@@ -359,6 +365,106 @@ role_shared_services_configure_influxdb() {
     fi
 }
 
+role_shared_services_install_minio() {
+    log_step "Installing MinIO"
+
+    if command -v minio &>/dev/null; then
+        log_info "MinIO already installed: $(minio --version 2>/dev/null || echo 'unknown')"
+        return 0
+    fi
+
+    local arch
+    arch=$(uname -m)
+    local minio_arch="amd64"
+    case "$arch" in
+        aarch64|arm64) minio_arch="arm64" ;;
+        x86_64) minio_arch="amd64" ;;
+        *) log_error "Unsupported architecture: $arch"; return 1 ;;
+    esac
+
+    log_info "Downloading MinIO for ${minio_arch}..."
+    curl -sL "https://dl.min.io/server/minio/release/linux-${minio_arch}/minio" -o /usr/local/bin/minio
+    chmod +x /usr/local/bin/minio
+
+    log_success "MinIO installed: $(minio --version 2>/dev/null)"
+}
+
+role_shared_services_configure_minio() {
+    log_step "Configuring MinIO"
+
+    # Generate credentials if not set
+    if [ -z "${MINIO_ROOT_USER:-}" ]; then
+        MINIO_ROOT_USER="minioadmin"
+    fi
+    if [ -z "${MINIO_ROOT_PASSWORD:-}" ]; then
+        MINIO_ROOT_PASSWORD=$(generate_secret)
+    fi
+
+    MINIO_DATA_DIR="/data/minio"
+    mkdir -p "$MINIO_DATA_DIR"
+
+    # Create systemd service
+    cat > /etc/systemd/system/minio.service <<EOF
+[Unit]
+Description=MinIO Object Storage
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/minio server \
+    --address "${DB_LISTEN_IP}:9000" \
+    --console-address "${DB_LISTEN_IP}:9001" \
+    ${MINIO_DATA_DIR}
+Environment="MINIO_ROOT_USER=${MINIO_ROOT_USER}"
+Environment="MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}"
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable minio
+    systemctl start minio
+
+    # Wait for MinIO to be ready
+    for i in $(seq 1 30); do
+        if curl -sf "http://${DB_LISTEN_IP}:9000/minio/health/live" &>/dev/null; then
+            log_success "MinIO is running"
+            break
+        fi
+        sleep 2
+    done
+
+    if ! curl -sf "http://${DB_LISTEN_IP}:9000/minio/health/live" &>/dev/null; then
+        log_error "MinIO failed to start"
+        log_info "Check: journalctl -u minio -f"
+        return 1
+    fi
+
+    # Install mc (MinIO Client) for bucket creation
+    if ! command -v mc &>/dev/null; then
+        local arch
+        arch=$(uname -m)
+        local mc_arch="amd64"
+        case "$arch" in
+            aarch64|arm64) mc_arch="arm64" ;;
+        esac
+        curl -sL "https://dl.min.io/client/mc/release/linux-${mc_arch}/mc" -o /usr/local/bin/mc
+        chmod +x /usr/local/bin/mc
+    fi
+
+    # Configure mc alias and create bucket
+    sleep 2
+    mc alias set local "http://${DB_LISTEN_IP}:9000" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" 2>/dev/null
+    mc mb local/history --ignore-existing 2>/dev/null
+
+    log_success "MinIO bucket 'history' created"
+}
+
 role_shared_services_save_config() {
     log_step "Saving Configuration"
 
@@ -369,7 +475,7 @@ role_shared_services_save_config() {
     cat > /etc/bharatradar/db-config.env <<EOF
 # Shared Services Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.4.1
+# Version: 3.5.0
 
 ROLE=shared-services
 DB_LISTEN_IP="${DB_LISTEN_IP}"
@@ -379,6 +485,9 @@ DB_PASSWORD="${DB_PASSWORD}"
 DB_NAME="${DB_NAME}"
 REDIS_PASSWORD="${REDIS_PASSWORD}"
 INFLUXDB_ADMIN_TOKEN="${INFLUXDB_ADMIN_TOKEN}"
+MINIO_ROOT_USER="${MINIO_ROOT_USER}"
+MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD}"
+MINIO_ENDPOINT="${DB_LISTEN_IP}:9000"
 
 # Connection string for K3s servers
 DB_CONNECTION_STRING="${conn_string}"
@@ -395,6 +504,9 @@ DB_LISTEN_IP="${DB_LISTEN_IP}"
 DB_PORT="${DB_PORT}"
 DB_USER="${DB_USER}"
 DB_NAME="${DB_NAME}"
+MINIO_ENDPOINT="${MINIO_ENDPOINT}"
+MINIO_ROOT_USER="${MINIO_ROOT_USER}"
+MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD}"
 EOF
 
     chmod 600 /etc/bharatradar/config.env
@@ -413,14 +525,19 @@ role_shared_services_post_install() {
     echo "    PostgreSQL: ${DB_LISTEN_IP}:${DB_PORT}"
     echo "    Redis:      ${DB_LISTEN_IP}:6379"
     echo "    InfluxDB:   ${DB_LISTEN_IP}:8086"
+    echo "    MinIO:      ${DB_LISTEN_IP}:9000 (console: ${DB_LISTEN_IP}:9001)"
     echo ""
     echo -e "  ${CYAN}Credentials (save these!):${NC}"
     echo "    PostgreSQL:  user=${DB_USER}  password=${DB_PASSWORD}"
     echo "    Redis:       password=${REDIS_PASSWORD}"
     echo "    InfluxDB:    token=${INFLUXDB_ADMIN_TOKEN}"
+    echo "    MinIO:       user=${MINIO_ROOT_USER}  password=${MINIO_ROOT_PASSWORD}"
     echo ""
     echo -e "  ${CYAN}K3s Connection String:${NC}"
     echo "    ${conn_string}"
+    echo ""
+    echo -e "  ${CYAN}MinIO Rclone Config:${NC}"
+    echo "    endpoint = http://${DB_LISTEN_IP}:9000"
     echo ""
     echo -e "  ${CYAN}Next step: Install Primary Hub with this connection string:${NC}"
     echo "    curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash"
@@ -430,7 +547,10 @@ role_shared_services_post_install() {
     echo "    sudo systemctl status postgresql"
     echo "    sudo systemctl status redis-server"
     echo "    sudo systemctl status influxdb"
+    echo "    sudo systemctl status minio"
     echo "    sudo -u postgres psql -d k3s"
+    echo "    mc alias set local http://${DB_LISTEN_IP}:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}"
+    echo "    mc ls local/history"
     echo ""
     echo -e "${GREEN}================================================================${NC}"
 }
@@ -453,6 +573,8 @@ role_shared_services_run() {
     role_shared_services_configure_redis
     role_shared_services_install_influxdb
     role_shared_services_configure_influxdb
+    role_shared_services_install_minio
+    role_shared_services_configure_minio
     role_shared_services_save_config
     role_shared_services_post_install
 }

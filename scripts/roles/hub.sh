@@ -47,6 +47,21 @@ role_hub_collect_config() {
     done
 
     echo ""
+    log_step "MinIO Configuration (History Service Storage)"
+    echo ""
+    echo "  The history service stores ADS-B data in MinIO (S3-compatible storage)."
+    echo "  MinIO runs on your shared services host alongside PostgreSQL and Redis."
+    echo ""
+
+    prompt_input "MinIO endpoint (host:port)" "${MINIO_ENDPOINT:-192.168.200.187:9000}" MINIO_ENDPOINT
+    prompt_input "MinIO access key" "${MINIO_ROOT_USER:-minioadmin}" MINIO_ROOT_USER
+    prompt_input "MinIO secret key" "${MINIO_ROOT_PASSWORD:-}" MINIO_ROOT_PASSWORD
+    while [ -z "$MINIO_ROOT_PASSWORD" ]; do
+        log_error "Secret key cannot be empty"
+        prompt_input "MinIO secret key" "" MINIO_ROOT_PASSWORD
+    done
+
+    echo ""
     log_step "GitHub Container Registry (GHCR) Authentication"
     echo ""
     echo "  BharatRadar images are hosted on GitHub Container Registry."
@@ -365,107 +380,6 @@ role_hub_install_k3s() {
     exit 1
 }
 
-# Helper: stop k3s, clear stale data, restart and wait
-recover_from_stale_data() {
-    local db_connection_string="$1"
-
-    log_warn "K3s bootstrap failed: stale data in PostgreSQL."
-    log_info "The database contains data from a previous installation with a different token."
-    echo ""
-
-    if prompt_confirm "Clear stale data and restart K3s?"; then
-        clear_stale_k3s_data "$db_connection_string"
-
-        systemctl stop k3s 2>/dev/null || true
-        sleep 2
-
-        log_info "Restarting K3s..."
-        systemctl restart k3s
-
-        log_info "Waiting for K3s to be ready..."
-        for i in $(seq 1 60); do
-            if kubectl cluster-info &>/dev/null 2>&1; then
-                log_success "K3s server is ready"
-                return 0
-            fi
-            sleep 2
-        done
-        log_error "K3s still not ready after restart"
-        log_info "Check logs: journalctl -u k3s.service -e"
-        exit 1
-    else
-        log_error "K3s cannot start with stale data"
-        exit 1
-    fi
-}
-
-role_hub_install_k3s() {
-
-    local k3s_installed=false
-    if command -v k3s &>/dev/null; then
-        k3s_installed=true
-    fi
-
-    if [ "$k3s_installed" = true ] && kubectl cluster-info &>/dev/null 2>&1; then
-        log_info "K3s already installed and running"
-        return 0
-    fi
-
-    # If K3s is installed but not running, diagnose the failure
-    if [ "$k3s_installed" = true ]; then
-        local svc_status
-        svc_status=$(systemctl is-active k3s 2>/dev/null || echo "inactive")
-        if [ "$svc_status" = "activating" ] || [ "$svc_status" = "failed" ]; then
-            local journal_output
-            journal_output=$(journalctl -u k3s.service --no-pager -n 20 2>/dev/null || true)
-            if echo "$journal_output" | grep -q "bootstrap data already found and encrypted with different token"; then
-                recover_from_stale_data "$DB_CONNECTION_STRING"
-            fi
-        fi
-    fi
-
-    K3S_TOKEN=$(generate_token)
-    export K3S_TOKEN
-
-    local k3s_args=()
-
-    if [ "$USE_EXTERNAL_DB" = true ]; then
-        export K3S_DATASTORE_ENDPOINT="$DB_CONNECTION_STRING"
-        k3s_args=("--datastore-endpoint=${DB_CONNECTION_STRING}")
-        log_info "Installing K3s with external datastore..."
-    else
-        k3s_args=("--cluster-init")
-        log_info "Installing K3s with embedded etcd..."
-    fi
-
-    curl -sfL https://get.k3s.io | sh -s - server "${k3s_args[@]}"
-
-    log_info "Waiting for K3s to be ready..."
-    for i in $(seq 1 60); do
-        if kubectl cluster-info &>/dev/null 2>&1; then
-            log_success "K3s server is ready"
-            return 0
-        fi
-
-        # Check for bootstrap token mismatch every 10 iterations
-        if [ $(( i % 10 )) -eq 0 ] && [ "$USE_EXTERNAL_DB" = true ]; then
-            local journal_output
-            journal_output=$(journalctl -u k3s.service --no-pager -n 5 2>/dev/null || true)
-            if echo "$journal_output" | grep -q "bootstrap data already found and encrypted with different token"; then
-                recover_from_stale_data "$DB_CONNECTION_STRING"
-                i=0
-                continue
-            fi
-        fi
-
-        sleep 2
-    done
-
-    log_error "K3s failed to become ready"
-    log_info "Check logs: journalctl -u k3s.service -e"
-    exit 1
-}
-
 role_hub_create_secrets() {
     log_step "Creating Kubernetes Secrets"
 
@@ -495,17 +409,29 @@ role_hub_create_secrets() {
         log_warn "Self-signed TLS certificate created (placeholder)"
     fi
 
-    # Rclone secret (dummy config - users should replace with real remote config)
+    # Rclone secret pointing to MinIO on shared services Pi
     if ! kubectl get secret adsblol-rclone -n bharatradar &>/dev/null; then
-        kubectl create secret generic adsblol-rclone \
-            --from-literal=rclone.conf="[adsblol]
+        if [ -n "${MINIO_ENDPOINT:-}" ] && [ -n "${MINIO_ROOT_USER:-}" ] && [ -n "${MINIO_ROOT_PASSWORD:-}" ]; then
+            kubectl create secret generic adsblol-rclone \
+                --from-literal=rclone.conf="[adsblol]
+type = s3
+provider = Other
+access_key_id = ${MINIO_ROOT_USER}
+secret_access_key = ${MINIO_ROOT_PASSWORD}
+endpoint = http://${MINIO_ENDPOINT}" \
+                -n bharatradar --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+            log_success "Rclone secret created for MinIO (${MINIO_ENDPOINT})"
+        else
+            kubectl create secret generic adsblol-rclone \
+                --from-literal=rclone.conf="[adsblol]
 type = s3
 provider = Other
 access_key_id = YOUR_ACCESS_KEY
 secret_access_key = YOUR_SECRET_KEY
-endpoint = https://your-s3-endpoint.example.com" \
-            -n bharatradar --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
-        log_warn "Rclone secret created with dummy config (update with real S3 credentials)"
+endpoint = http://YOUR_MINIO_ENDPOINT:9000" \
+                -n bharatradar --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+            log_warn "Rclone secret created with placeholder (set MINIO_ENDPOINT in config.env)"
+        fi
     fi
 }
 
@@ -744,7 +670,7 @@ role_hub_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Primary Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.4.6
+# Version: 3.5.0
 
 ROLE=hub
 BASE_DOMAIN="${BASE_DOMAIN}"
@@ -755,6 +681,9 @@ GHCR_USERNAME="${GHCR_USERNAME}"
 REDIS_HOST="${REDIS_HOST}"
 REDIS_PORT="${REDIS_PORT:-6379}"
 REDIS_PASSWORD="${REDIS_PASSWORD:-}"
+MINIO_ENDPOINT="${MINIO_ENDPOINT}"
+MINIO_ROOT_USER="${MINIO_ROOT_USER}"
+MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD}"
 USE_EXTERNAL_DB="${USE_EXTERNAL_DB}"
 DB_HOST="${DB_HOST:-}"
 DB_PORT="${DB_PORT:-5432}"
@@ -823,6 +752,9 @@ role_hub_run() {
         REDIS_HOST="${REDIS_HOST:-}"
         REDIS_PORT="${REDIS_PORT:-6379}"
         REDIS_PASSWORD="${REDIS_PASSWORD:-}"
+        MINIO_ENDPOINT="${MINIO_ENDPOINT:-}"
+        MINIO_ROOT_USER="${MINIO_ROOT_USER:-}"
+        MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-}"
         DB_HOST="${DB_HOST:-}"
         DB_PORT="${DB_PORT:-5432}"
         DB_DBNAME="${DB_DBNAME:-k3s}"

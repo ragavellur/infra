@@ -11,7 +11,7 @@ Data flow: user → ingest → hub → planes
 | Node | IP | Role | OS | Arch |
 |------|----|------|----|------|
 | Hub | 192.168.200.145 | K3s server | Ubuntu 24.04 (Core i7) | amd64 |
-| br-aggrigator | 192.168.200.187 | K3s agent | Debian 12 (Raspberry Pi) | arm64 |
+| br-aggrigator | 192.168.200.187 | K3s agent + Shared Services (PostgreSQL, Redis, InfluxDB, MinIO) | Debian 12 (Raspberry Pi) | arm64 |
 | Feeder Pi | 192.168.200.127 | RTL-SDR readsb + mlat-client (not K3s) | Raspberry Pi OS | arm64 |
 
 Services (manifests/default):
