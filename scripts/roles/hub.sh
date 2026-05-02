@@ -211,10 +211,10 @@ role_hub_install_k3s() {
             log_info "Attempting to clear stale data..."
 
             local db_host db_dbname db_dbuser db_dbpass
-            db_host=$(echo "$DB_CONNECTION_STRING" | grep -oP '@\K[^:]+')
-            db_dbname=$(echo "$DB_CONNECTION_STRING" | grep -oP '/\K[a-zA-Z0-9_]+$')
-            db_dbuser=$(echo "$DB_CONNECTION_STRING" | grep -oP '://\K[^:]+')
-            db_dbpass=$(echo "$DB_CONNECTION_STRING" | grep -oP '://[^@]+@\K[^@]+' | cut -d':' -f2-)
+            db_host=$(echo "$DB_CONNECTION_STRING" | sed "s|postgres://||" | cut -d"@" -f2 | cut -d":" -f1)
+            db_dbname=$(echo "$DB_CONNECTION_STRING" | sed "s|postgres://||" | cut -d"@" -f2 | cut -d"/" -f2)
+            db_dbuser=$(echo "$DB_CONNECTION_STRING" | sed "s|postgres://||" | cut -d"@" -f1 | cut -d":" -f1)
+            db_dbpass=$(echo "$DB_CONNECTION_STRING" | sed "s|postgres://||" | cut -d"@" -f1 | cut -d":" -f2-)
 
             local cleared=false
 
