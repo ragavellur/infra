@@ -3,25 +3,15 @@ resources:
 namePrefix: hub-
 images:
 - name: ghcr.io/sdr-enthusiasts/docker-tar1090:latest
-  newName: ghcr.io/sdr-enthusiasts/docker-readsb-protobuf
+  newName: ghcr.io/wiedehopf/readsb
   newTag: latest
 patches:
 - target:
     kind: Deployment
   patch: |-
     - op: replace
-      path: /spec/template/spec/containers/0/command
-      value: ["/init"]
-    - op: add
-      path: /spec/template/spec/containers/0/env/-
-      value:
-        name: READSB_NET_BEAST_INPUT_PORT
-        value: "30004"
-    - op: add
-      path: /spec/template/spec/containers/0/env/-
-      value:
-        name: READSB_DEVICE_TYPE
-        value: "none"
+      path: /spec/template/spec/containers/0/args
+      value: ["--net-only", "--net", "--net-receiver-id", "--net-connector=ingest-readsb,30005,beast_in", "--net-bi-port=30004", "--net-bo-port=30005", "--device-type=none", "--max-range=99999"]
     - op: replace
       path: /spec/template/spec/containers/0/livenessProbe
       value: null

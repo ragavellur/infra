@@ -5,35 +5,15 @@ commonLabels:
   service: public
 images:
 - name: ghcr.io/sdr-enthusiasts/docker-tar1090:latest
-  newName: ghcr.io/sdr-enthusiasts/docker-readsb-protobuf
+  newName: ghcr.io/wiedehopf/readsb
   newTag: latest
 patches:
 - target:
     kind: Deployment
   patch: |-
     - op: replace
-      path: /spec/template/spec/containers/0/command
-      value: ["/init"]
-    - op: add
-      path: /spec/template/spec/containers/0/env/-
-      value:
-        name: READSB_NET_INGEST_MODE
-        value: "true"
-    - op: add
-      path: /spec/template/spec/containers/0/env/-
-      value:
-        name: READSB_NET_BEAST_OUTPUT_PORT
-        value: "30005"
-    - op: add
-      path: /spec/template/spec/containers/0/env/-
-      value:
-        name: READSB_MAX_RANGE
-        value: "99999"
-    - op: add
-      path: /spec/template/spec/containers/0/env/-
-      value:
-        name: READSB_DEVICE_TYPE
-        value: "none"
+      path: /spec/template/spec/containers/0/args
+      value: ["--net-only", "--net", "--net-ingest", "--net-receiver-id", "--net-bi-port=30004", "--net-bo-port=30005", "--net-bind-address=0.0.0.0", "--device-type=none", "--max-range=99999"]
     - op: replace
       path: /spec/template/spec/containers/0/livenessProbe
       value: null

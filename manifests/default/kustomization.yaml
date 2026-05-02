@@ -3,7 +3,7 @@ resources:
 - ingest/default
 - external/default
 - hub/default
-- mlat/default  # ✅ adsblol/mlat-server works
+- mlat/default
 - reapi/default
 - planes/default
 - mlat-map/default
@@ -13,21 +13,9 @@ resources:
 - resources.yaml
 namespace: adsblol
 images:
-- name: ghcr.io/katlol/readsb
-  newName: ghcr.io/sdr-enthusiasts/docker-readsb-protobuf
-  newTag: latest
 - name: ghcr.io/katlol/mlat-server
   newName: ghcr.io/adsblol/mlat-server
-  newTag: latest
-- name: ghcr.io/sdr-enthusiasts/docker-tar1090
-  newName: ghcr.io/sdr-enthusiasts/docker-readsb-protobuf
   newTag: latest
 - name: ghcr.io/adsblol/history
   newName: ghcr.io/ragavellur/history
-  newTag: latest
-- name: ghcr.io/katlol/mlat-server
-  newName: ghcr.io/adsblol/mlat-server
-  newTag: latest
-- name: ghcr.io/sdr-enthusiasts/docker-tar1090
-  newName: ghcr.io/sdr-enthusiasts/docker-readsb-protobuf
   newTag: latest

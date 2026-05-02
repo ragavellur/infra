@@ -3,20 +3,15 @@ resources:
 namePrefix: reapi-
 images:
 - name: ghcr.io/sdr-enthusiasts/docker-tar1090:latest
-  newName: ghcr.io/sdr-enthusiasts/docker-readsb-protobuf
+  newName: ghcr.io/wiedehopf/readsb
   newTag: latest
 patches:
 - target:
     kind: Deployment
   patch: |-
     - op: replace
-      path: /spec/template/spec/containers/0/command
-      value: ["/init"]
-    - op: add
-      path: /spec/template/spec/containers/0/env/-
-      value:
-        name: READSB_DEVICE_TYPE
-        value: "none"
+      path: /spec/template/spec/containers/0/args
+      value: ["--net-only", "--net", "--net-receiver-id", "--net-connector=hub-readsb,30005,beast_in", "--device-type=none"]
     - op: replace
       path: /spec/template/spec/containers/0/livenessProbe
       value: null

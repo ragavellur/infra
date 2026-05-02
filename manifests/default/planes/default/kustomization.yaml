@@ -2,6 +2,11 @@ resources:
 - ../base
 - resources.yaml
 namePrefix: planes-
+namespace: adsblol
+images:
+- name: ghcr.io/wiedehopf/readsb
+  newName: ghcr.io/bharatradar/docker-tar1090-uuid
+  newTag: latest
 generatorOptions:
   disableNameSuffixHash: true
 configMapGenerator:
@@ -39,7 +44,7 @@ patches:
       path: /spec/template/spec/containers/0/env/-
       value:
         name: READSB_NET_CONNECTOR
-        value: "mlat-mlat-server,30104,sbs_in_mlat"
+        value: "hub-readsb.adsblol,30005,beast_in;mlat-mlat-server.adsblol,30104,sbs_in_mlat"
     - op: add
       path: /spec/template/spec/containers/0/env/-
       value:
@@ -83,6 +88,15 @@ patches:
         - name: tar1090-config
           mountPath: /opt/tar1090/html/layers.js
           subPath: layers.js
+
+- target:
+    kind: Deployment
+    name: readsb
+  patch: |-
+    - op: add
+      path: /spec/template/spec/imagePullSecrets
+      value:
+        - name: ghcr-secret
 
 # rclone sidecar disabled - needs adsblol-rclone secret with OneDrive config
 # Uncomment when secret is available:
