@@ -288,7 +288,7 @@ role_feeder_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Feeder Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.3.2
+# Version: 3.3.3
 
 ROLE=feeder
 FEEDER_DOMAIN="${FEEDER_DOMAIN}"
