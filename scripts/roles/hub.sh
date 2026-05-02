@@ -88,6 +88,11 @@ role_hub_collect_config() {
         log_info "Enter your PostgreSQL server details:"
         collect_pg_config "DB"
         log_info "Using external PostgreSQL: ${DB_HOST}:${DB_PORT}/${DB_DBNAME}"
+
+        echo ""
+        log_info "SSH credentials for the PostgreSQL host (for remote management):"
+        prompt_input "PostgreSQL host SSH username" "bharatradar" DB_SSH_USER
+        prompt_input "PostgreSQL host SSH password" "" DB_SSH_PASSWORD
     fi
 
     echo ""
@@ -165,8 +170,80 @@ role_hub_collect_config() {
     fi
 }
 
+# Helper: attempt to clear stale K3s data from PostgreSQL via SSH
+clear_stale_k3s_data() {
+    local db_connection_string="$1"
+    local db_host db_dbname
+    db_host=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f2 | cut -d":" -f1)
+    db_dbname=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f2 | cut -d"/" -f2)
+
+    log_info "Clearing stale data from PostgreSQL at ${db_host}/${db_dbname}..."
+
+    # Try SSH to the DB host
+    if command -v sshpass &>/dev/null; then
+        if sshpass -p "${DB_SSH_PASSWORD:-}" ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no "${DB_SSH_USER:-bharatradar}@${db_host}" \
+            "sudo -u postgres psql -c 'DROP TABLE kine;' ${db_dbname}" 2>/dev/null; then
+            log_success "Cleared stale data from PostgreSQL"
+            return 0
+        fi
+    fi
+
+    # Try local psql if available
+    if command -v psql &>/dev/null; then
+        local db_user db_pass
+        db_user=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f1 | cut -d":" -f1)
+        db_pass=$(echo "$db_connection_string" | sed "s|postgres://||" | cut -d"@" -f1 | cut -d":" -f2-)
+        if PGPASSWORD="$db_pass" psql -h "$db_host" -U "$db_user" -d "$db_dbname" -c 'DROP TABLE kine;' 2>/dev/null; then
+            log_success "Cleared stale data from PostgreSQL"
+            return 0
+        fi
+    fi
+
+    # Fallback: show manual command
+    log_warn "Could not connect to PostgreSQL automatically."
+    log_info "Run this command on ${db_host}:"
+    echo ""
+    echo -e "  ${CYAN}sudo -u postgres psql -c 'DROP TABLE kine;' ${db_dbname}${NC}"
+    echo ""
+    read -rp "Press Enter after clearing the database..." < /dev/tty
+    return 0
+}
+
+# Helper: stop k3s, clear stale data, restart and wait
+recover_from_stale_data() {
+    local db_connection_string="$1"
+
+    log_warn "K3s bootstrap failed: stale data in PostgreSQL."
+    log_info "The database contains data from a previous installation with a different token."
+    echo ""
+
+    if prompt_confirm "Clear stale data and restart K3s?"; then
+        clear_stale_k3s_data "$db_connection_string"
+
+        systemctl stop k3s 2>/dev/null || true
+        sleep 2
+
+        log_info "Restarting K3s..."
+        systemctl restart k3s
+
+        log_info "Waiting for K3s to be ready..."
+        for i in $(seq 1 60); do
+            if kubectl cluster-info &>/dev/null 2>&1; then
+                log_success "K3s server is ready"
+                return 0
+            fi
+            sleep 2
+        done
+        log_error "K3s still not ready after restart"
+        log_info "Check logs: journalctl -u k3s.service -e"
+        exit 1
+    else
+        log_error "K3s cannot start with stale data"
+        exit 1
+    fi
+}
+
 role_hub_install_k3s() {
-    log_step "Installing K3s Server"
 
     local k3s_installed=false
     if command -v k3s &>/dev/null; then
@@ -186,37 +263,7 @@ role_hub_install_k3s() {
             local journal_output
             journal_output=$(journalctl -u k3s.service --no-pager -n 20 2>/dev/null || true)
             if echo "$journal_output" | grep -q "bootstrap data already found and encrypted with different token"; then
-                log_warn "K3s service is failing: stale bootstrap data in PostgreSQL."
-                log_info "The database contains data from a previous installation with a different token."
-                echo ""
-                if prompt_confirm "Clear stale data and restart K3s?"; then
-                    local db_host db_dbname
-                    db_host=$(echo "$DB_CONNECTION_STRING" | sed "s|postgres://||" | cut -d"@" -f2 | cut -d":" -f1)
-                    db_dbname=$(echo "$DB_CONNECTION_STRING" | sed "s|postgres://||" | cut -d"@" -f2 | cut -d"/" -f2)
-                    log_info "Run this command on the PostgreSQL host (${db_host}):"
-                    echo ""
-                    echo -e "  ${CYAN}sudo -u postgres psql -c 'DROP TABLE kine;' ${db_dbname}${NC}"
-                    echo ""
-                    read -rp "Press Enter after clearing the database..." < /dev/tty
-                    systemctl stop k3s 2>/dev/null || true
-                    sleep 2
-                    log_info "Restarting K3s..."
-                    systemctl restart k3s
-                    log_info "Waiting for K3s to be ready..."
-                    for i in $(seq 1 60); do
-                        if kubectl cluster-info &>/dev/null 2>&1; then
-                            log_success "K3s server is ready"
-                            return 0
-                        fi
-                        sleep 2
-                    done
-                    log_error "K3s still not ready after restart"
-                    log_info "Check logs: journalctl -u k3s.service -e"
-                    exit 1
-                else
-                    log_error "K3s cannot start with stale data"
-                    exit 1
-                fi
+                recover_from_stale_data "$DB_CONNECTION_STRING"
             fi
         fi
     fi
@@ -249,29 +296,9 @@ role_hub_install_k3s() {
             local journal_output
             journal_output=$(journalctl -u k3s.service --no-pager -n 5 2>/dev/null || true)
             if echo "$journal_output" | grep -q "bootstrap data already found and encrypted with different token"; then
-                log_warn "K3s bootstrap failed: stale data in PostgreSQL."
-                log_info "The database contains data from a previous installation with a different token."
-                echo ""
-                if prompt_confirm "Clear stale data and retry?"; then
-                    local db_host db_dbname
-                    db_host=$(echo "$DB_CONNECTION_STRING" | sed "s|postgres://||" | cut -d"@" -f2 | cut -d":" -f1)
-                    db_dbname=$(echo "$DB_CONNECTION_STRING" | sed "s|postgres://||" | cut -d"@" -f2 | cut -d"/" -f2)
-                    log_info "Run this on the PostgreSQL host (${db_host}):"
-                    echo ""
-                    echo -e "  ${CYAN}sudo -u postgres psql -c 'DROP TABLE kine;' ${db_dbname}${NC}"
-                    echo ""
-                    read -rp "Press Enter after clearing the database..." < /dev/tty
-                    systemctl stop k3s 2>/dev/null || true
-                    sleep 2
-                    log_info "Restarting K3s..."
-                    systemctl restart k3s
-                    # Reset loop counter
-                    i=0
-                    continue
-                else
-                    log_error "K3s cannot start with stale data"
-                    exit 1
-                fi
+                recover_from_stale_data "$DB_CONNECTION_STRING"
+                i=0
+                continue
             fi
         fi
 
@@ -561,7 +588,7 @@ role_hub_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Primary Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.4.3
+# Version: 3.4.4
 
 ROLE=hub
 BASE_DOMAIN="${BASE_DOMAIN}"
@@ -571,12 +598,15 @@ TIMEZONE="${TIMEZONE}"
 GHCR_USERNAME="${GHCR_USERNAME}"
 REDIS_HOST="${REDIS_HOST}"
 REDIS_PORT="${REDIS_PORT:-6379}"
+REDIS_PASSWORD="${REDIS_PASSWORD:-}"
 USE_EXTERNAL_DB="${USE_EXTERNAL_DB}"
 DB_HOST="${DB_HOST:-}"
 DB_PORT="${DB_PORT:-5432}"
 DB_DBNAME="${DB_DBNAME:-k3s}"
 DB_DBUSER="${DB_DBUSER:-k3s}"
 DB_CONNECTION_STRING="${DB_CONNECTION_STRING:-}"
+DB_SSH_USER="${DB_SSH_USER:-bharatradar}"
+DB_SSH_PASSWORD="${DB_SSH_PASSWORD:-}"
 FRP_ENABLED="${FRP_ENABLED}"
 FRP_SERVER="${FRP_SERVER:-}"
 K3S_TOKEN="${K3S_TOKEN:-}"
@@ -638,10 +668,13 @@ role_hub_run() {
         READSB_LON="${READSB_LON:-}"
         REDIS_HOST="${REDIS_HOST:-}"
         REDIS_PORT="${REDIS_PORT:-6379}"
+        REDIS_PASSWORD="${REDIS_PASSWORD:-}"
         DB_HOST="${DB_HOST:-}"
         DB_PORT="${DB_PORT:-5432}"
         DB_DBNAME="${DB_DBNAME:-k3s}"
         DB_DBUSER="${DB_DBUSER:-k3s}"
+        DB_SSH_USER="${DB_SSH_USER:-bharatradar}"
+        DB_SSH_PASSWORD="${DB_SSH_PASSWORD:-}"
     fi
 
     role_hub_collect_config
