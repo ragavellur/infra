@@ -120,7 +120,7 @@ role_ha_server_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar HA Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.0.3
+# Version: 3.0.4
 
 ROLE=ha-server
 BASE_DOMAIN=${BASE_DOMAIN}

@@ -23,11 +23,7 @@ role_hub_collect_config() {
     prompt_input "Receiver latitude" "18.480718" READSB_LAT
     prompt_input "Receiver longitude" "73.898235" READSB_LON
 
-    if command -v timedatectl &>/dev/null; then
-        TZ_DEFAULT=$(timedatectl show --property=Timezone --value 2>/dev/null || echo "UTC")
-    else
-        TZ_DEFAULT="UTC"
-    fi
+    TZ_DEFAULT="Etc/UTC"
     prompt_input "Timezone" "$TZ_DEFAULT" TIMEZONE
 
     echo ""
@@ -421,7 +417,7 @@ role_hub_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Primary Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.0.3
+# Version: 3.0.4
 
 ROLE=hub
 BASE_DOMAIN=${BASE_DOMAIN}
