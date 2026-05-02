@@ -198,7 +198,60 @@ role_hub_install_k3s() {
         sleep 2
     done
 
+    # Check for known failure modes
+    local journal_output
+    journal_output=$(journalctl -u k3s.service --no-pager -n 30 2>/dev/null || true)
+
+    if echo "$journal_output" | grep -q "bootstrap data already found and encrypted with different token"; then
+        log_warn "Stale K3s bootstrap data detected in PostgreSQL."
+        log_info "This happens when K3s was previously installed with a different token."
+        echo ""
+
+        if prompt_confirm "Clear stale data from PostgreSQL and retry?"; then
+            log_info "Attempting to clear stale data..."
+
+            local db_host db_dbname db_dbuser db_dbpass
+            db_host=$(echo "$DB_CONNECTION_STRING" | grep -oP '@\K[^:]+')
+            db_dbname=$(echo "$DB_CONNECTION_STRING" | grep -oP '/\K[a-zA-Z0-9_]+$')
+            db_dbuser=$(echo "$DB_CONNECTION_STRING" | grep -oP '://\K[^:]+')
+            db_dbpass=$(echo "$DB_CONNECTION_STRING" | grep -oP '://[^@]+@\K[^@]+' | cut -d':' -f2-)
+
+            local cleared=false
+
+            # Try direct psql if available on this host
+            if command -v psql &>/dev/null; then
+                log_info "Connecting to PostgreSQL at ${db_host}:${db_dbname}..."
+                PGPASSWORD="$db_dbpass" psql -h "$db_host" -U "$db_dbuser" -d "$db_dbname" -c 'DROP TABLE kine;' 2>/dev/null && {
+                    log_success "Cleared stale data from PostgreSQL"
+                    cleared=true
+                }
+            fi
+
+            if [ "$cleared" = false ]; then
+                log_warn "Cannot connect to PostgreSQL directly."
+                log_info "Run this command on ${db_host}:"
+                echo ""
+                echo -e "  ${CYAN}sudo -u postgres psql -c 'DROP TABLE kine;' ${db_dbname}${NC}"
+                echo ""
+                read -rp "Press Enter after clearing the database..." < /dev/tty
+            fi
+
+            # Restart K3s with clean state
+            log_info "Restarting K3s..."
+            systemctl restart k3s
+            log_info "Waiting for K3s to be ready..."
+            for i in $(seq 1 60); do
+                if kubectl cluster-info &>/dev/null 2>&1; then
+                    log_success "K3s server is ready"
+                    return 0
+                fi
+                sleep 2
+            done
+        fi
+    fi
+
     log_error "K3s failed to become ready"
+    log_info "Check logs: journalctl -u k3s.service -e"
     exit 1
 }
 
@@ -480,7 +533,7 @@ role_hub_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Primary Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.4.1
+# Version: 3.4.2
 
 ROLE=hub
 BASE_DOMAIN="${BASE_DOMAIN}"
