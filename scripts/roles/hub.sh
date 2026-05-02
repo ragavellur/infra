@@ -670,7 +670,7 @@ role_hub_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Primary Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.5.0
+# Version: 3.5.2
 
 ROLE=hub
 BASE_DOMAIN="${BASE_DOMAIN}"
@@ -700,6 +700,71 @@ EOF
 
     chmod 600 /etc/bharatradar/config.env
     log_success "Configuration saved to /etc/bharatradar/config.env"
+
+    # Save credentials file for reference
+    local creds_dir="/etc/bharatradar/credentials"
+    local creds_file="${creds_dir}/hub-$(date -u +"%Y%m%d-%H%M%S").txt"
+    mkdir -p "$creds_dir"
+
+    cat > "$creds_file" <<EOF
+============================================================
+  Primary Hub Credentials
+  Generated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+  Host: $(hostname)
+============================================================
+
+  GitHub Container Registry (GHCR):
+    Username: ${GHCR_USERNAME}
+    Token:    ${GHCR_PASSWORD}
+
+  K3s Cluster:
+    Token:    ${K3S_TOKEN}
+
+  Redis (external):
+    Host:     ${REDIS_HOST}
+    Port:     ${REDIS_PORT:-6379}
+    Password: ${REDIS_PASSWORD}
+
+  MinIO (S3-compatible storage):
+    Endpoint: ${MINIO_ENDPOINT}
+    User:     ${MINIO_ROOT_USER}
+    Password: ${MINIO_ROOT_PASSWORD}
+EOF
+
+    if [ "$USE_EXTERNAL_DB" = true ]; then
+        cat >> "$creds_file" <<EOF
+
+  PostgreSQL (external datastore):
+    Host:     ${DB_HOST:-}
+    Port:     ${DB_PORT:-5432}
+    Database: ${DB_DBNAME:-k3s}
+    User:     ${DB_DBUSER:-k3s}
+    Password: ${DB_PASSWORD:-}
+    URL:      ${DB_CONNECTION_STRING:-}
+EOF
+    else
+        cat >> "$creds_file" <<EOF
+
+  K3s Datastore: Embedded etcd (no external DB)
+EOF
+    fi
+
+    if [ "${FRP_ENABLED}" = "true" ]; then
+        cat >> "$creds_file" <<EOF
+
+  FRP Tunnel:
+    Server:   ${FRP_SERVER:-}
+    Token:    ${FRP_TOKEN:-}
+EOF
+    fi
+
+    cat >> "$creds_file" <<EOF
+
+============================================================
+EOF
+
+    chmod 600 "$creds_file"
+    log_success "Credentials saved to ${creds_file}"
 }
 
 role_hub_post_install() {
@@ -732,6 +797,8 @@ role_hub_post_install() {
     echo "    Worker Node: curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- worker"
     echo ""
     echo -e "  ${CYAN}Cluster token (save this!):${NC} ${K3S_TOKEN}"
+    echo ""
+    echo -e "  ${CYAN}Credentials file:${NC} /etc/bharatradar/credentials/hub-*.txt"
     echo ""
     echo -e "  ${CYAN}Useful commands:${NC}"
     echo "    kubectl get pods -n bharatradar"

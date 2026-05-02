@@ -471,11 +471,12 @@ role_shared_services_save_config() {
     mkdir -p /etc/bharatradar
 
     local conn_string="postgres://${DB_USER}:${DB_PASSWORD}@${DB_LISTEN_IP}:${DB_PORT}/${DB_NAME}"
+    MINIO_ENDPOINT="${MINIO_ENDPOINT:-${DB_LISTEN_IP}:9000}"
 
     cat > /etc/bharatradar/db-config.env <<EOF
 # Shared Services Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.5.0
+# Version: 3.5.2
 
 ROLE=shared-services
 DB_LISTEN_IP="${DB_LISTEN_IP}"
@@ -487,7 +488,7 @@ REDIS_PASSWORD="${REDIS_PASSWORD}"
 INFLUXDB_ADMIN_TOKEN="${INFLUXDB_ADMIN_TOKEN}"
 MINIO_ROOT_USER="${MINIO_ROOT_USER}"
 MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD}"
-MINIO_ENDPOINT="${DB_LISTEN_IP}:9000"
+MINIO_ENDPOINT="${MINIO_ENDPOINT}"
 
 # Connection string for K3s servers
 DB_CONNECTION_STRING="${conn_string}"
@@ -511,6 +512,50 @@ EOF
 
     chmod 600 /etc/bharatradar/config.env
     log_success "Configuration saved to /etc/bharatradar/"
+
+    # Save credentials file for reference
+    local creds_dir="/etc/bharatradar/credentials"
+    local creds_file="${creds_dir}/shared-services-$(date -u +"%Y%m%d-%H%M%S").txt"
+    mkdir -p "$creds_dir"
+
+    cat > "$creds_file" <<EOF
+============================================================
+  Shared Services Credentials
+  Generated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+  Host: $(hostname)
+  IP: ${DB_LISTEN_IP}
+============================================================
+
+  PostgreSQL:
+    Host:     ${DB_LISTEN_IP}
+    Port:     ${DB_PORT}
+    Database: ${DB_NAME}
+    User:     ${DB_USER}
+    Password: ${DB_PASSWORD}
+    URL:      ${conn_string}
+
+  Redis:
+    Host:     ${DB_LISTEN_IP}
+    Port:     6379
+    Password: ${REDIS_PASSWORD}
+
+  InfluxDB:
+    Host:     ${DB_LISTEN_IP}
+    Port:     8086
+    Token:    ${INFLUXDB_ADMIN_TOKEN}
+
+  MinIO:
+    Host:     ${DB_LISTEN_IP}
+    API Port: 9000
+    Console:  ${DB_LISTEN_IP}:9001
+    User:     ${MINIO_ROOT_USER}
+    Password: ${MINIO_ROOT_PASSWORD}
+
+============================================================
+EOF
+
+    chmod 600 "$creds_file"
+    log_success "Credentials saved to ${creds_file}"
 }
 
 role_shared_services_post_install() {
@@ -551,6 +596,8 @@ role_shared_services_post_install() {
     echo "    sudo -u postgres psql -d k3s"
     echo "    mc alias set local http://${DB_LISTEN_IP}:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}"
     echo "    mc ls local/history"
+    echo ""
+    echo -e "  ${CYAN}Credentials file:${NC} /etc/bharatradar/credentials/shared-services-*.txt"
     echo ""
     echo -e "${GREEN}================================================================${NC}"
 }
