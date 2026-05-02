@@ -27,6 +27,26 @@ role_hub_collect_config() {
     prompt_input "Timezone" "$TZ_DEFAULT" TIMEZONE
 
     echo ""
+    log_step "External Redis Configuration"
+    echo ""
+    echo "  Services (API, MLAT, History) connect to Redis on the shared services host."
+    echo "  Enter the Redis server details."
+    echo ""
+
+    prompt_input "Redis host IP" "${REDIS_HOST:-}" REDIS_HOST
+    while [ -z "$REDIS_HOST" ] || ! validate_ip "$REDIS_HOST"; do
+        log_error "Invalid IP address"
+        prompt_input "Redis host IP" "${REDIS_HOST:-}" REDIS_HOST
+    done
+
+    prompt_input "Redis port" "${REDIS_PORT:-6379}" REDIS_PORT
+    prompt_input "Redis password" "${REDIS_PASSWORD:-}" REDIS_PASSWORD
+    while [ -z "$REDIS_PASSWORD" ]; do
+        log_error "Password cannot be empty"
+        prompt_input "Redis password" "" REDIS_PASSWORD
+    done
+
+    echo ""
     log_step "GitHub Container Registry (GHCR) Authentication"
     echo ""
     echo "  BharatRadar images are hosted on GitHub Container Registry."
@@ -121,7 +141,8 @@ role_hub_collect_config() {
     echo -e "  Domain:    ${CYAN}${BASE_DOMAIN}${NC}"
     echo -e "  Lat/Lon:   ${CYAN}${READSB_LAT}, ${READSB_LON}${NC}"
     echo -e "  Timezone:  ${CYAN}${TIMEZONE}${NC}"
-    echo -e "  GHCR User: ${CYAN}${GHCR_USERNAME}${NC}"
+    echo -e "  ${CYAN}GHCR User: ${CYAN}${GHCR_USERNAME}${NC}"
+    echo -e "  ${CYAN}Redis:     ${CYAN}${REDIS_HOST}:${REDIS_PORT}${NC}"
     if [ "$USE_EXTERNAL_DB" = true ]; then
         echo -e "  Datastore: ${CYAN}External PostgreSQL${NC}"
     else
@@ -208,14 +229,6 @@ role_hub_create_secrets() {
         rm -f /tmp/tls.crt /tmp/tls.key
         log_warn "Self-signed TLS certificate created (placeholder)"
     fi
-
-    # Rclone secret (placeholder for history service)
-    if ! kubectl get secret adsblol-rclone -n bharatradar &>/dev/null; then
-        echo "[placeholder]" | kubectl create secret generic adsblol-rclone \
-            --from-file=rclone.conf=/dev/stdin \
-            -n bharatradar --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
-        log_warn "Rclone secret created with placeholder"
-    fi
 }
 
 role_hub_deploy_services() {
@@ -278,6 +291,28 @@ role_hub_deploy_services() {
     # Apply API env patch
     kubectl set env deployment/api-api \
         MY_DOMAIN="my.${BASE_DOMAIN}" \
+        REDIS_HOST="${REDIS_HOST}" \
+        REDIS_PORT="${REDIS_PORT}" \
+        REDIS_PASSWORD="${REDIS_PASSWORD}" \
+        -n bharatradar 2>/dev/null || true
+
+    # Apply Redis env to all services that need it
+    kubectl set env deployment/haproxy \
+        REDIS_HOST="${REDIS_HOST}" \
+        REDIS_PORT="${REDIS_PORT}" \
+        REDIS_PASSWORD="${REDIS_PASSWORD}" \
+        -n bharatradar 2>/dev/null || true
+
+    kubectl set env deployment/mlat-map-mlat-map \
+        REDIS_HOST="${REDIS_HOST}" \
+        REDIS_PORT="${REDIS_PORT}" \
+        REDIS_PASSWORD="${REDIS_PASSWORD}" \
+        -n bharatradar 2>/dev/null || true
+
+    kubectl set env deployment/history-history \
+        REDIS_HOST="${REDIS_HOST}" \
+        REDIS_PORT="${REDIS_PORT}" \
+        REDIS_PASSWORD="${REDIS_PASSWORD}" \
         -n bharatradar 2>/dev/null || true
 
     # Apply API salt ConfigMap
@@ -415,7 +450,7 @@ role_hub_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Primary Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.3.7
+# Version: 3.3.8
 
 ROLE=hub
 BASE_DOMAIN="${BASE_DOMAIN}"
@@ -423,6 +458,8 @@ READSB_LAT="${READSB_LAT}"
 READSB_LON="${READSB_LON}"
 TIMEZONE="${TIMEZONE}"
 GHCR_USERNAME="${GHCR_USERNAME}"
+REDIS_HOST="${REDIS_HOST}"
+REDIS_PORT="${REDIS_PORT:-6379}"
 USE_EXTERNAL_DB="${USE_EXTERNAL_DB}"
 DB_HOST="${DB_HOST:-}"
 DB_PORT="${DB_PORT:-5432}"
@@ -488,6 +525,8 @@ role_hub_run() {
         BASE_DOMAIN="${BASE_DOMAIN:-}"
         READSB_LAT="${READSB_LAT:-}"
         READSB_LON="${READSB_LON:-}"
+        REDIS_HOST="${REDIS_HOST:-}"
+        REDIS_PORT="${REDIS_PORT:-6379}"
         DB_HOST="${DB_HOST:-}"
         DB_PORT="${DB_PORT:-5432}"
         DB_DBNAME="${DB_DBNAME:-k3s}"

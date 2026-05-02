@@ -49,8 +49,6 @@ spec:
             - mountPath: /usr/local/etc/haproxy/haproxy.cfg
               name: haproxy-config
               subPath: haproxy.cfg
-            - mountPath: /usr/local/etc/haproxy/lua/
-              name: haproxy-lua
       volumes:
         - configMap:
             defaultMode: 420
@@ -59,10 +57,6 @@ spec:
                 path: haproxy.cfg
             name: haproxy-config
           name: haproxy-config
-        - configMap:
-            defaultMode: 420
-            name: haproxy-lua
-          name: haproxy-lua
   strategy:
     rollingUpdate:
       maxSurge: 3

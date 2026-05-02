@@ -7,4 +7,3 @@ configMapGenerator:
   - name: haproxy-config
     files:
       - haproxy.cfg
-  - name: haproxy-lua
