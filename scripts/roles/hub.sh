@@ -271,21 +271,58 @@ role_hub_deploy_services() {
     # Apply shared resources first
     kubectl apply -f "${OVERLAY_DIR}/resources.yaml" -n bharatradar 2>/dev/null || true
 
-    # Deploy components in dependency order
-    local components=("redis" "api" "mlat" "mlat-map" "ingest" "hub" "external" "reapi" "planes" "history" "website" "haproxy")
-
-    for component in "${components[@]}"; do
+    # Helper: deploy a component and strip ServiceMonitor resources
+    deploy_component() {
+        local component="$1"
         local manifest_dir="${SCRIPT_DIR}/../manifests/default/${component}/default"
-        if [ -d "$manifest_dir" ]; then
-            log_info "Deploying ${component}..."
-            # Filter out ServiceMonitor resources (CRD may not be installed)
-            kustomize build "$manifest_dir" 2>/dev/null \
-                | grep -v 'kind: ServiceMonitor' \
-                | grep -v 'monitoring.coreos.com/v1' \
-                | kubectl apply -f - -n bharatradar 2>&1 || true
-            log_success "${component} deployed"
+        if [ ! -d "$manifest_dir" ]; then
+            return 0
         fi
-    done
+        log_info "Deploying ${component}..."
+        kustomize build "$manifest_dir" 2>/dev/null \
+            | awk 'BEGIN{RS="---"; ORS="---"} !/kind: ServiceMonitor/ && /kind:/' \
+            | kubectl apply -f - -n bharatradar 2>&1 || true
+    }
+
+    # Helper: wait for a deployment to be ready
+    wait_for_deployment() {
+        local name="$1"
+        log_info "Waiting for ${name} to be ready..."
+        kubectl rollout status "deployment/${name}" -n bharatradar --timeout=120s 2>/dev/null || true
+    }
+
+    # Phase 1: Core services (no external dependencies)
+    deploy_component "redis"
+    deploy_component "api"
+    deploy_component "website"
+
+    # Phase 2: ADS-B data sources (must exist before haproxy can resolve them)
+    deploy_component "ingest"
+    deploy_component "hub"
+    deploy_component "external"
+    deploy_component "reapi"
+    deploy_component "mlat"
+    deploy_component "planes"
+
+    # Phase 3: Wait for data source deployments to be ready
+    wait_for_deployment "ingest-readsb"
+    wait_for_deployment "hub-readsb"
+    wait_for_deployment "external-readsb"
+    wait_for_deployment "reapi-readsb"
+    wait_for_deployment "planes-readsb"
+    wait_for_deployment "mlat-mlat-server"
+    wait_for_deployment "api-api"
+
+    # Give CoreDNS time to register services
+    log_info "Waiting for CoreDNS to register services..."
+    sleep 10
+
+    # Phase 4: Dependent services (require data sources to be resolvable)
+    deploy_component "mlat-map"
+    deploy_component "history"
+    deploy_component "haproxy"
+
+    log_success "All services deployed"
 
     # Apply runtime patches
     if [ -n "${FRP_SERVER:-}" ]; then
@@ -464,7 +501,7 @@ role_hub_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Primary Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.3.9
+# Version: 3.4.0
 
 ROLE=hub
 BASE_DOMAIN="${BASE_DOMAIN}"
