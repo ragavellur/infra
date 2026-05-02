@@ -189,7 +189,7 @@ select_role() {
 
     local choice
     while true; do
-        read -rp "Select [1-4]: " choice
+        read -rp "Select [1-4]: " choice < /dev/tty
         case "$choice" in
             1) ROLE="frp-server"; break ;;
             2) ROLE="hub"; break ;;

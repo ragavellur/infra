@@ -68,16 +68,19 @@ validate_longitude() {
 }
 
 # Input functions
+# All reads from /dev/tty to work when script is piped (curl | bash)
+
 prompt_input() {
     local prompt_msg="$1"
     local default_value="$2"
     local result_var="$3"
+    local input
 
     if [ -n "$default_value" ]; then
-        read -rp "${prompt_msg} [${default_value}]: " input
+        read -rp "${prompt_msg} [${default_value}]: " input < /dev/tty
         eval "$result_var=\"${input:-$default_value}\""
     else
-        read -rp "${prompt_msg}: " input
+        read -rp "${prompt_msg}: " input < /dev/tty
         eval "$result_var=\"$input\""
     fi
 }
@@ -85,12 +88,13 @@ prompt_input() {
 prompt_confirm() {
     local prompt_msg="$1"
     local default_value="${2:-y}"
+    local response
 
     if [ "$default_value" = "y" ]; then
-        read -rp "${prompt_msg} [Y/n]: " response
+        read -rp "${prompt_msg} [Y/n]: " response < /dev/tty
         response=${response:-y}
     else
-        read -rp "${prompt_msg} [y/N]: " response
+        read -rp "${prompt_msg} [y/N]: " response < /dev/tty
         response=${response:-n}
     fi
 
@@ -102,6 +106,7 @@ prompt_select() {
     local options=("${@:2:$(( $# - 3 ))}")
     local result_var="${@: -1}"
     local i=1
+    local choice
 
     echo "$prompt_msg"
     for option in "${options[@]}"; do
@@ -110,7 +115,7 @@ prompt_select() {
     done
 
     while true; do
-        read -rp "Select [1-${#options[@]}]: " choice
+        read -rp "Select [1-${#options[@]}]: " choice < /dev/tty
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#options[@]}" ]; then
             eval "$result_var=\"${options[$((choice - 1))]}\""
             return 0
