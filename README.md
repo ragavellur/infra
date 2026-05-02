@@ -10,13 +10,22 @@ Community-driven ADS-B aggregation, built as a fork of [adsblol/infra](https://g
 
 ```
 Feeder Pi (RTL-SDR) ──→ feed.bharat-radar.vellur.in:30004 (AWS EC2 FRP) ──→ Hub ingest
-                                                                                   │
-                                                                                    v
-              Hub (Ubuntu i7, K3s server) ←─── br-aggrigator (Pi, K3s agent)
-               /    |    |    |    |    \                   (failover node)
-         ingest  hub  planes  api  mlat  mlat-map
-           |      |     |      |     |
-        external  reapi  redis  haproxy(3x)
+                                                                                    │
+                                                                                     v
+   ┌───────────────────────────┐         ┌───────────────────────────┐
+   │  Hub (K3s server, MASTER)  │←VIP→│  HA Server (K3s, BACKUP) │
+   │  192.168.200.145 (i7)      │         │  192.168.200.155 (i5)     │
+   │  planes api mlat hub       │         │  same PostgreSQL datastore │
+   │  haproxy redis mlat-map    │         │                            │
+   └─────────────┬─────────────┘         └─────────────┬─────────────┘
+                 │ shared PostgreSQL                   │
+                 v                                     v
+   ┌─────────────────────────────────────────────────────────────┐
+   │  Shared Services (Pi)                                        │
+   │  192.168.200.127  ← PostgreSQL + Redis + InfluxDB           │
+   └─────────────────────────────────────────────────────────────┘
+                 ▲
+                 │ (optional DB Standby replica)
 ```
 
 ### Data Flow
@@ -41,8 +50,10 @@ Hub Cluster:
 
 | Node | IP | OS | Role | Arch |
 |------|----|----|------|------|
-| **Hub** | 192.168.200.145 | Ubuntu 24.04 (Core i7) | K3s server, runs all services | amd64 |
-| **br-aggrigator** | 192.168.200.187 | Debian 12 (Raspberry Pi) | K3s agent, failover node | arm64 |
+| **Hub** | 192.168.200.145 | Ubuntu 24.04 (Core i7) | K3s server, PRIMARY keepalived | amd64 |
+| **HA Server** | 192.168.200.155 | macOS/Core i5 | K3s server, BACKUP keepalived | amd64 |
+| **br-aggrigator** | 192.168.200.187 | Debian 12 (Raspberry Pi) | K3s agent (optional) | arm64 |
+| **Shared Services** | 192.168.200.127 | Raspberry Pi OS | PostgreSQL + Redis + InfluxDB | arm64 |
 | **Feeder Pi** | 192.168.200.127 | Raspberry Pi OS | RTL-SDR + readsb + mlat-client (not K3s) | arm64 |
 
 ### Services
@@ -60,6 +71,9 @@ Hub Cluster:
 | **history** | `ghcr.io/bharatradar/history` | bharatradar | 8080, 80 | Historical data (amd64 only) |
 | **haproxy** | `haproxy:2.7` | bharatradar | 80, 443 | Load balancer (3 replicas) |
 | **redis** | `redis:alpine` | bharatradar | 6379 | Cache |
+| **PostgreSQL** | `postgresql` (apt) | shared-services | 5432 | K3s external datastore |
+| **Redis** | `redis-server` (apt) | shared-services | 6379 | API cache |
+| **InfluxDB** | `influxdb2` | shared-services | 8086 | Metrics storage |
 
 ### Custom Images
 
@@ -79,12 +93,48 @@ All images are built with `--platform linux/amd64,linux/arm64` and pushed to `gh
 | Subdomain | Service | Notes |
 |-----------|---------|-------|
 | `map.bharat-radar.vellur.in` | planes-readsb | tar1090 map interface |
+| `my.bharat-radar.vellur.in` | api | Personalized feeder map (IP-based lookup) |
 | `mlat.bharat-radar.vellur.in` | mlat-map | MLAT coverage visualization |
 | `history.bharat-radar.vellur.in` | history | Historical flight data |
-| `bharat-radar.vellur.in` | api | Main web API / homepage |
+| `api.bharat-radar.vellur.in` | api | Main web API |
+| `bharat-radar.vellur.in` | website | Homepage / documentation |
 | `feed.bharat-radar.vellur.in` | AWS FRP server | Feeder endpoint (ports 30004, 31090) |
+| `map.bharat-radar.vellur.in/re-api` | planes-readsb | readsb HTTP API for feeders |
+
+## Known Limitations
+
+**FRP & Feeder IP Tracking:** All feeder connections currently route through FRP (AWS EC2 tunnel), which means readsb records the internal tunnel IP (`10.42.0.1`) instead of the feeder's real public IP. This causes the `my.bharat-radar.vellur.in` IP-based feeder lookup to fall back to single-feeder mode while FRP is active. Once FRP is removed and feeders connect directly to the cluster, IP matching will work automatically for all feeders.
 
 ## How?
+
+### Quick Deploy (Recommended)
+
+One-liner install on each machine — follow the wizard:
+
+```bash
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash
+```
+
+Or non-interactive:
+
+```bash
+# 1. Shared services (PostgreSQL + Redis + InfluxDB)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- shared-services
+
+# 2. Primary Hub (first K3s server, use DB connection string from step 1)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- hub
+
+# 3a. HA Server (second K3s server, joins same DB)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- ha-server
+
+# 3b. Worker Node (K3s agent, joins via Hub)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- worker
+
+# Feeder Pi (RTL-SDR, standalone)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- feeder
+```
+
+### Manual Deploy (kustomize)
 
 ```bash
 # Preview manifests
@@ -96,6 +146,8 @@ kustomize build manifests/default | kubectl apply -f -
 # Verify
 kubectl get pods -n bharatradar
 ```
+
+Full installer docs: [scripts/README.md](scripts/README.md)
 
 ## Where?
 

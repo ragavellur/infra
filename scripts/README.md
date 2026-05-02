@@ -5,52 +5,77 @@ Automated installation and management for the BharatRadar ADS-B/MLAT platform.
 ## Architecture
 
 ```
-                    Cloudflare DNS → map.bharat-radar.vellur.in
-                                          |
-                                    AWS frps + nginx
-                                      /    |    \
-                              port 30004  31090  HTTP/HTTPS
-                                 |         |         |
-                                 v         v         v
-              ┌─────────────────────────────────────────────────┐
-              │           HUB (K3s server)                      │
-              │           192.168.200.145 (Ubuntu i7)           │
-              │                                                 │
-              │  planes  api  mlat  hub  reapi  ingest          │
-              │  haproxy  redis  mlat-map  external  website    │
-              └──────────────────────┬──────────────────────────┘
-                                     │ k3s join
-                                     v
-              ┌─────────────────────────────────────────┐
-              │  BR-AGGRIGATOR (K3s agent)              │
-              │  192.168.200.187 (Raspberry Pi, arm64)  │
-              │  Failover node                          │
-              └─────────────────────────────────────────┘
+                     Cloudflare DNS → map.bharat-radar.vellur.in
+                                           |
+                            ┌──────────────┴──────────────┐
+                            │      Keepalived VIP         │
+                            │    (auto-failover)          │
+                            └──────┬───────────────┬──────┘
+                                   │               │
+               ┌─────────────────────────┐ ┌─────────────────────────┐
+               │   HUB (K3s server)      │ │   HA SERVER (K3s)       │
+               │   192.168.200.145 (i7)  │ │   192.168.200.155 (i5)  │
+               │   MASTER keepalived     │ │   BACKUP keepalived     │
+               │   planes api mlat hub   │ │   joins same DB         │
+               │   haproxy redis mlat-map│ │                         │
+               └───────────┬─────────────┘ └─────────────┬───────────┘
+                           │         shared PostgreSQL   │
+                           │              │              │
+                           v              v              v
+               ┌───────────────────────────────────────────────────────┐
+               │  SHARED SERVICES (Pi)                                 │
+               │  192.168.200.127                                      │
+               │  PostgreSQL ←───────────────────────── DB Standby (opt)│
+               │  Redis                                                  │
+               │  InfluxDB                                               │
+               └─────────────────────────────────────────────────────────┘
+                                       ▲
+                                       │ feeds to FRP server
+     FEEDER PI (not K3s, standalone)   │
+     192.168.200.127                   │
+     readsb → feed.bharat-radar.vellur.in:30004 (via AWS FRP)
+     mlat-client → feed.bharat-radar.vellur.in:31090 (via AWS FRP)
 
-    FEEDER PI (not K3s, standalone)
-    192.168.200.127
-    readsb → feed.bharat-radar.vellur.in:30004 (via AWS FRP)
-    mlat-client → feed.bharat-radar.vellur.in:31090 (via AWS FRP)
+     WORKER NODE (K3s agent, optional)
+     joins via Hub:6443, runs scheduled pods
 ```
 
 ## Quick Start
 
-### Online Install (Recommended)
+### Interactive Wizard
 
-Run these commands on each machine depending on its role:
+Run on any machine and follow the prompts:
 
 ```bash
-# FRP Server (Cloud/VPS with public IP)
-curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- frp-server
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash
+```
 
-# Hub (K3s server, runs all services)
+### Online Install (Non-Interactive)
+
+Run the appropriate command on each machine:
+
+```bash
+# Step 1: Shared Services (PostgreSQL + Redis + InfluxDB)
+# Always prompts for primary or standby
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- shared-services
+
+# Step 2: Primary Hub (first K3s server, creates cluster)
 curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- hub
 
-# Aggregator (K3s agent, joins existing hub)
-curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- aggregator
+# Step 3a: HA Server (second K3s server, shares control plane)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- ha-server
+
+# Step 3b: Worker Node (K3s agent, runs pods only)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- worker
+
+# DB Standby (PostgreSQL streaming replica for failover)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- db-standby
 
 # Feeder Pi (RTL-SDR receiver, standalone)
 curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- feeder
+
+# FRP Server (Cloud/VPS with public IP)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- frp-server
 ```
 
 ### Local Install
@@ -60,20 +85,23 @@ curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatr
 git clone https://github.com/ragavellur/infra.git
 cd infra/scripts
 
-# Interactive wizard (asks you what you want to set up)
+# Interactive wizard (consolidated menu with sub-prompts)
 sudo ./bharatradar-install
 
 # Or specify role directly
 sudo ./bharatradar-install hub
+sudo ./bharatradar-install ha-server
+sudo ./bharatradar-install worker
 ```
 
 ### Post-Install Commands
 
 ```bash
-sudo ./bharatradar-install status      # Health dashboard
-sudo ./bharatradar-install uninstall   # Remove components
-sudo ./bharatradar-install update      # Update scripts and redeploy
-sudo ./bharatradar-install backup      # Backup configuration
+sudo ./bharatradar-install status        # Health dashboard
+sudo ./bharatradar-install remove-node   # Remove a node from cluster
+sudo ./bharatradar-install update        # Update scripts and redeploy
+sudo ./bharatradar-install backup        # Backup configuration
+sudo ./bharatradar-install uninstall     # Remove all components
 ```
 
 ## Scripts Overview
@@ -88,19 +116,25 @@ sudo ./bharatradar-install backup      # Backup configuration
 
 | Module | Description |
 |--------|-------------|
+| `roles/shared-services.sh` | PostgreSQL + Redis + InfluxDB (primary or standby) |
+| `roles/hub.sh` | Primary K3s server + all BharatRadar services (new cluster) |
+| `roles/ha-server.sh` | Second K3s server joining existing cluster (HA) |
+| `roles/worker.sh` | K3s agent node joining existing cluster |
+| `roles/db-standby.sh` | PostgreSQL streaming replica |
 | `roles/frp-server.sh` | FRP server setup (AWS/cloud VPS) |
-| `roles/hub.sh` | K3s server + all BharatRadar services |
-| `roles/aggregator.sh` | K3s agent join to existing hub |
 | `roles/feeder.sh` | RTL-SDR standalone receiver setup |
+| `roles/keepalived.sh` | Floating VIP for automatic server failover |
 
 ### Helper Modules (`helpers/`)
 
 | Module | Description |
 |--------|-------------|
-| `helpers/functions.sh` | Shared utilities (logging, validation, prompts) |
+| `helpers/functions.sh` | Shared utilities (logging, validation, prompts, IP detection) |
 | `helpers/templating.sh` | Runtime manifest overlay generation |
 | `helpers/verify.sh` | Post-install health checks |
 | `helpers/uninstall.sh` | Cleanup and reset functions |
+| `helpers/ssh-helpers.sh` | SSH/SCP wrappers, interactive node removal |
+| `helpers/node-ops.sh` | kubectl drain, cordon, and node management |
 
 ### Standalone Scripts (kept for compatibility)
 
@@ -113,7 +147,7 @@ sudo ./bharatradar-install backup      # Backup configuration
 ## Installation Flow
 
 ```
-bharatradar-install
+bharatradar-install (no args)
 │
 ├── [1] Prerequisites check
 │     ├── Root access
@@ -121,17 +155,28 @@ bharatradar-install
 │     ├── Architecture (amd64/arm64/arm)
 │     └── Network connectivity
 │
-├── [2] Role selection
-│     ├── 1) FRP Server (cloud/VPS)
-│     ├── 2) Hub (K3s server)
-│     ├── 3) Aggregator (K3s agent)
-│     └── 4) Feeder Pi (RTL-SDR)
+├── [2] Main menu selection
+│     ├── 1) Shared Services
+│     │       ├── 1) Primary DB Setup (fresh install)
+│     │       └── 2) Join as DB Standby (streaming replica)
+│     │
+│     ├── 2) K3s Cluster
+│     │       ├── 1) New Cluster (Primary Hub)
+│     │       ├── 2) Join as HA Server
+│     │       └── 3) Join as Worker
+│     │
+│     ├── 3) Feeder Pi
+│     ├── 4) FRP Server
+│     └── 5) Manage
+│             ├── 1) Status
+│             ├── 2) Remove Node
+│             ├── 3) Backup
+│             └── 4) Update
 │
 ├── [3] Configuration collection
 │     ├── Base domain
-│     ├── Email (for Let's Encrypt)
-│     ├── Lat/lon/altitude
-│     └── Role-specific (GHCR creds, FRP token, etc.)
+│     ├── Lat/lon/timezone
+│     └── Role-specific (GHCR creds, DB connection, FRP token, etc.)
 │
 ├── [4] Installation
 │     ├── Package installation
@@ -142,20 +187,29 @@ bharatradar-install
 └── [5] Post-install
       ├── Configuration saved to /etc/bharatradar/
       ├── Health verification
-      └── URLs and next steps displayed
+      └── URLs, credentials, and next steps displayed
 ```
 
 ## Node Roles
 
-| Feature | FRP Server | Hub | Aggregator | Feeder Pi |
-|---------|------------|-----|------------|-----------|
-| OS | Ubuntu/Debian (cloud) | Ubuntu/Debian | Debian/RPi OS | Raspberry Pi OS |
-| K3s | No | Server | Agent | No |
-| Services | frps, nginx, certbot | All (planes, api, mlat, etc.) | Runs pods on failover | readsb + mlat-client |
-| FRP | Server (frps) | Client (frpc) | None | None |
-| Hardware | Cloud VPS / AWS EC2 | Powerful machine (i7+) | Raspberry Pi (arm64) | Raspberry Pi + RTL-SDR |
-| Connects to | - | frps via tunnel | Hub (k3s join) | `feed.domain.com` |
-| Public IP | Required | Optional | Not needed | Not needed |
+| Feature | Shared Services | Hub | HA Server | Worker | DB Standby | Feeder Pi | FRP Server |
+|---------|-----------------|-----|-----------|--------|------------|-----------|------------|
+| OS | Debian/RPi OS | Ubuntu/Debian | Ubuntu/Debian | Any Linux | Debian/Ubuntu | Raspberry Pi OS | Ubuntu/Debian |
+| K3s | No | Server | Server | Agent | No | No | No |
+| Services | PostgreSQL, Redis, InfluxDB | All (planes, api, mlat, etc.) | Joins same DB, no separate deploy | Runs scheduled pods | PostgreSQL replica | readsb + mlat-client | frps, nginx |
+| Keepalived | No | MASTER (optional) | BACKUP (optional) | No | No | No | No |
+| Hardware | Raspberry Pi or any | Powerful machine (i7+) | Any server | Any | Same as primary DB | Raspberry Pi + RTL-SDR | Cloud VPS / AWS EC2 |
+| Public IP | No | Optional | No | No | No | No | Required |
+
+## Recommended Setup Order
+
+1. **Shared Services** → on Raspberry Pi (installs PostgreSQL, Redis, InfluxDB)
+2. **Primary Hub** → on Core i7 (creates K3s cluster, deploys all services)
+3. **HA Server** → on Mac Mini or second server (joins cluster, enables failover)
+4. **Worker** → on any additional machine (runs pods)
+5. **Feeder Pi** → on RTL-SDR machine (sends ADS-B data to cluster)
+
+Optional: **DB Standby** for PostgreSQL replica, **FRP Server** for public access if behind NAT.
 
 ## Requirements
 
@@ -200,6 +254,18 @@ journalctl -u frpc -f          # FRP client logs
 sudo systemctl status bharat-feeder
 sudo systemctl status bharat-mlat
 journalctl -u bharat-feeder -f
+
+# Check Keepalived VIP
+ip addr show | grep <VIP>
+sudo systemctl status keepalived
+
+# Check shared services
+sudo systemctl status postgresql
+sudo systemctl status redis-server
+sudo systemctl status influxdb
+
+# Remove a misbehaving node
+sudo ./bharatradar-install remove-node
 
 # Full uninstall and clean start
 sudo ./bharatradar-install uninstall
