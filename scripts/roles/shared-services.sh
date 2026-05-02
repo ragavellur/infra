@@ -296,23 +296,22 @@ role_shared_services_install_influxdb() {
     case "$os" in
         debian|ubuntu|raspbian)
             # Clean stale repo files from prior failed attempts
-            sudo rm -f /etc/apt/sources.list.d/influxdata.list /usr/share/keyrings/influxdb-archive-keyring.gpg
+            sudo rm -f /etc/apt/sources.list.d/influxdata.list
+            sudo rm -rf /usr/share/keyrings/influxdb-archive-keyring.gpg
+            sudo rm -rf /usr/share/influxdata-archive-keyring
 
-            # Fetch signing key from Ubuntu keyserver (works reliably on all Debian/RPi variants)
-            curl -s "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xDA61C26A0585BD3B" | gpg --dearmor | sudo tee /usr/share/keyrings/influxdb-archive-keyring.gpg > /dev/null
-
-            # Add repo with explicit signed-by
-            echo "deb [signed-by=/usr/share/keyrings/influxdb-archive-keyring.gpg] https://repos.influxdata.com/debian stable main" | sudo tee /etc/apt/sources.list.d/influxdata.list
-
-            # Use noninteractive frontend to avoid dpkg config prompts
-            export DEBIAN_FRONTEND=noninteractive
-
-            sudo apt-get update -qq
-
-            # Pre-accept maintainer version of any conflicting config files
+            # Pre-select maintainer version for any influxdata.list conflict
             echo "influxdata-archive-keyring influxdata-archive-keyring/influxdata.list select install the package maintainer's version" | sudo debconf-set-selections
 
-            sudo apt-get install -y -o Dpkg::Options::="--force-confnew" influxdb2 || {
+            # Fetch signing key
+            curl -s "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xDA61C26A0585BD3B" | gpg --dearmor | sudo tee /usr/share/keyrings/influxdb-archive-keyring.gpg > /dev/null
+
+            # Add repo
+            echo "deb [signed-by=/usr/share/keyrings/influxdb-archive-keyring.gpg] https://repos.influxdata.com/debian stable main" | sudo tee /etc/apt/sources.list.d/influxdata.list > /dev/null
+
+            # Fully noninteractive install - sudo resets env vars so prefix each command
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confnew" influxdb2 || {
                 log_warn "InfluxDB 2.x not available in repo, skipping..."
                 return 0
             }
@@ -363,7 +362,7 @@ role_shared_services_save_config() {
     cat > /etc/bharatradar/db-config.env <<EOF
 # Shared Services Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.3.1
+# Version: 3.3.2
 
 ROLE=shared-services
 DB_LISTEN_IP="${DB_LISTEN_IP}"
