@@ -13,8 +13,11 @@ metadata:
     external-dns.alpha.kubernetes.io/hostname: feed.bharat-radar.vellur.in
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
 spec:
-  internalTrafficPolicy: Local
-  externalTrafficPolicy: Local
+  # Cluster policy allows kube-proxy on ANY node to forward to the pod,
+  # even if the pod is on a different node. Required for HA failover
+  # when VIP moves to backup but pods haven't rescheduled yet.
+  internalTrafficPolicy: Cluster
+  externalTrafficPolicy: Cluster
   selector:
     app: ingest
     service: public
@@ -37,8 +40,11 @@ metadata:
   annotations:
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
 spec:
-  internalTrafficPolicy: Local
-  externalTrafficPolicy: Local
+  # Cluster policy allows kube-proxy on ANY node to forward to the pod,
+  # even if the pod is on a different node. Required for HA failover
+  # when VIP moves to backup but pods haven't rescheduled yet.
+  internalTrafficPolicy: Cluster
+  externalTrafficPolicy: Cluster
   selector:
     app: mlat
     service: public

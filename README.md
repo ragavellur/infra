@@ -140,6 +140,8 @@ curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatr
 curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- feeder
 ```
 
+> **HA Note:** With two hubs, HTTP/HTTPS traffic (map, API) is **load balanced** across both nodes. Beast (30004) and MLAT (31090) are **active-standby** — the VIP lives on one node at a time. See [install.md](install.md) for full failover details and the planned DaemonSet improvement.
+
 > **Automatic Resume:** If the installer is interrupted (network error, package failure, etc.), simply re-run the same command. It will detect saved progress and resume from the last completed phase.
 >
 > **Silent Install:** Pass a config file to skip all prompts: `--conf-file /path/to/config.env`. See [install.md](install.md) for full details including checkpoint phases and the complete configuration reference.

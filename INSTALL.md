@@ -1,6 +1,6 @@
 # BharatRadar Infrastructure - Installation Guide
 
-> **Version:** 3.1.0
+> **Version:** 3.2.0
 > **Last Updated:** May 2026
 > **GitHub:** https://github.com/ragavellur/infra
 
@@ -393,6 +393,99 @@ cat /etc/bharatradar/.config.partial
 sudo rm -f /etc/bharatradar/.install-progress /etc/bharatradar/.config.partial
 sudo ./bharatradar-install <role>
 ```
+
+---
+
+## Adding a Second Hub (HA Server)
+
+### Prerequisites
+
+- Second machine on the same LAN (Ubuntu/Debian, amd64 or arm64)
+- Same PostgreSQL external datastore as the Primary Hub
+- Keepalived VIP already configured on the Primary Hub (`KEEPALIVED_ENABLED=true`)
+
+### Setup
+
+**1. Get the K3s cluster token from the Primary Hub:**
+
+```bash
+ssh user@192.168.200.145 'sudo cat /var/lib/rancher/k3s/server/node-token'
+```
+
+**2. Create the config file on the HA Server:**
+
+```bash
+cat > /tmp/ha.env << 'EOF'
+ROLE=ha-server
+BASE_DOMAIN=bharat-radar.vellur.in
+DB_HOST=192.168.200.187
+DB_PORT=5432
+DB_DBNAME=k3s
+DB_DBUSER=k3s
+DB_DBPASS=your-db-password
+K3S_CLUSTER_TOKEN=K10xxxxxxxx::server:xxxxxxxx
+PRIMARY_HUB_IP=192.168.200.145
+KEEPALIVED_ENABLED=true
+KEEPALIVED_VIP=192.168.200.150
+KEEPALIVED_STATE=BACKUP
+EOF
+```
+
+**3. Run the installer:**
+
+```bash
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- --conf-file /tmp/ha.env ha-server
+```
+
+### Failover Behavior
+
+| Step | Time | What happens |
+|------|------|-------------|
+| Primary Hub fails | 0s | Keepalived detects loss of MASTER |
+| VIP moves to backup | ~3s | Backup node becomes MASTER, claims `192.168.200.150` |
+| kube-proxy routes traffic | ~3s | `externalTrafficPolicy: Cluster` forwards beast/MLAT to pod on dead primary |
+| K3s reschedules pods | ~30-60s | ingest-readsb and mlat-mlat-server recreated on backup |
+| Feeder Pi reconnects | Auto | readsb and mlat-client auto-reconnect to feed.bharat-radar.vellur.in |
+
+**Result:**
+- Web/API/map traffic: **0s downtime**
+- Beast/MLAT data: **~30-60s interruption** (until pods reschedule)
+
+### Load Balancing vs Active-Standby
+
+| Traffic Type | Behavior |
+|-------------|----------|
+| **HTTP/HTTPS** (map, API, mlat-map, history) | ✅ **Load balanced** — Traefik ingress runs on all nodes, distributes across both hubs |
+| **Beast (port 30004)** | ❌ **Active-standby only** — VIP is on ONE node at a time |
+| **MLAT (port 31090)** | ❌ **Active-standby only** — VIP is on ONE node at a time |
+
+To get active-active load balancing for beast/MLAT, you would need separate public IPs per hub or a cloud load balancer with health checks.
+
+---
+
+## Future Enhancements
+
+### DaemonSet for Instant Failover (Planned)
+
+**Current limitation:** The ~30-60s pod reschedule window for beast/MLAT during failover.
+
+**Planned improvement:** Convert `ingest-readsb` and `mlat-mlat-server` from **Deployment** to **DaemonSet** (one pod per node).
+
+**Benefits:**
+- Instant failover — pod already running on the backup node
+- Zero reschedule delay
+- Simpler mental model
+
+**Challenges:**
+- `hub-readsb` must connect to ALL ingest pods simultaneously (not just one)
+- Requires a headless service to discover all node IPs
+- `hub-readsb --net-connector` needs to target multiple endpoints
+
+**Implementation approach:**
+1. Change `ingest-readsb` from Deployment → DaemonSet
+2. Change `mlat-mlat-server` from Deployment → DaemonSet
+3. `hub-readsb` connects to `ingest-readsb-headless` (returns all pod IPs via DNS)
+4. `hub-readsb` opens a beast connection to each ingest node independently
 
 ---
 
