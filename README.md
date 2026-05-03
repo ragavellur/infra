@@ -117,12 +117,18 @@ curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatr
 
 Or non-interactive:
 
+> **Note:** The `--` after `bash -s` is required. It tells bash to stop parsing options and pass everything after to the script. Without it, arguments like `--conf-file` will be rejected as invalid bash options.
+
 ```bash
 # 1. Shared services (PostgreSQL + Redis + InfluxDB)
 curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- shared-services
 
 # 2. Primary Hub (first K3s server, use DB connection string from step 1)
 curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- hub
+
+# 2b. Primary Hub with Keepalived VIP (prepares for HA failover)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- --conf-file /tmp/hub.env hub
+#   # In /tmp/hub.env: KEEPALIVED_ENABLED=true  KEEPALIVED_VIP=192.168.200.150
 
 # 3a. HA Server (second K3s server, joins same DB)
 curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- ha-server

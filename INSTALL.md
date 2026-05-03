@@ -1,6 +1,6 @@
 # BharatRadar Infrastructure - Installation Guide
 
-> **Version:** 3.0.0
+> **Version:** 3.1.0
 > **Last Updated:** May 2026
 > **GitHub:** https://github.com/ragavellur/infra
 
@@ -206,6 +206,8 @@ curl -sfL https://get.k3s.io | \
 
 Run the appropriate one-liner on each machine. The installer will prompt only for required information and automatically resume from failures.
 
+> **Why `--`?** The `--` after `bash -s` is required. It tells bash to stop parsing its own options and pass everything after to the script. Without it, arguments starting with `--` (like `--conf-file`) are rejected as invalid bash options.
+
 ```bash
 # Step 1: Shared Services (PostgreSQL + Redis + InfluxDB + MinIO)
 # Always prompts for primary or standby mode
@@ -213,6 +215,10 @@ curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatr
 
 # Step 2: Primary Hub (first K3s server, creates cluster)
 curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- hub
+
+# Step 2b: Primary Hub with Keepalived VIP (prepares for HA failover)
+# Create /tmp/hub.env with KEEPALIVED_ENABLED=true and KEEPALIVED_VIP first
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- --conf-file /tmp/hub.env hub
 
 # Step 3a: HA Server (second K3s server, shares control plane)
 curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- ha-server
@@ -242,7 +248,7 @@ For fully automated, non-interactive installs, create a configuration file with 
 
 Create a file (e.g., `/tmp/bharatradar.env`) with the variables for your role:
 
-**Example: Hub**
+**Example: Hub (basic)**
 ```bash
 cat > /tmp/hub.env << 'EOF'
 ROLE=hub
@@ -266,6 +272,34 @@ MINIO_ROOT_USER=minioadmin
 MINIO_ROOT_PASSWORD=your-minio-password
 FRP_ENABLED=false
 KEEPALIVED_ENABLED=false
+EOF
+```
+
+**Example: Hub with Keepalived VIP (recommended if you plan to add a second server)**
+```bash
+cat > /tmp/hub.env << 'EOF'
+ROLE=hub
+BASE_DOMAIN=bharat-radar.vellur.in
+READSB_LAT=18.480718
+READSB_LON=73.898235
+TIMEZONE=Asia/Kolkata
+REDIS_HOST=192.168.200.187
+REDIS_PORT=6379
+REDIS_PASSWORD=your-redis-password
+GHCR_USERNAME=your-github-user
+GHCR_PASSWORD=your-github-pat
+USE_EXTERNAL_DB=true
+DB_HOST=192.168.200.187
+DB_PORT=5432
+DB_DBNAME=k3s
+DB_DBUSER=k3s
+DB_DBPASS=your-db-password
+MINIO_ENDPOINT=192.168.200.187:9000
+MINIO_ROOT_USER=minioadmin
+MINIO_ROOT_PASSWORD=your-minio-password
+FRP_ENABLED=false
+KEEPALIVED_ENABLED=true
+KEEPALIVED_VIP=192.168.200.150
 EOF
 ```
 
