@@ -662,6 +662,7 @@ role_hub_deploy_services() {
 
     # Install keepalived if enabled
     if [ "$KEEPALIVED_ENABLED" = true ]; then
+        source "${SCRIPT_DIR}/roles/keepalived.sh"
         keepalived_install
         keepalived_configure
     fi
