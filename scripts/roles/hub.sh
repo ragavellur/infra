@@ -62,6 +62,13 @@ role_hub_collect_config() {
     done
 
     echo ""
+    echo "  Optional: Copy rclone config from existing file?"
+    prompt_input "Path to rclone.conf (leave empty to skip)" "" RCLONE_CONFIG_PATH
+    if [ -n "$RCLONE_CONFIG_PATH" ] && [ -f "$RCLONE_CONFIG_PATH" ]; then
+        log_info "Using rclone config from: $RCLONE_CONFIG_PATH"
+    fi
+
+    echo ""
     log_step "GitHub Container Registry (GHCR) Authentication"
     echo ""
     echo "  BharatRadar images are hosted on GitHub Container Registry."
@@ -409,9 +416,14 @@ role_hub_create_secrets() {
         log_warn "Self-signed TLS certificate created (placeholder)"
     fi
 
-    # Rclone secret pointing to MinIO on shared services Pi
+    # Rclone secret - use existing config path or create from MinIO credentials
     if ! kubectl get secret adsblol-rclone -n bharatradar &>/dev/null; then
-        if [ -n "${MINIO_ENDPOINT:-}" ] && [ -n "${MINIO_ROOT_USER:-}" ] && [ -n "${MINIO_ROOT_PASSWORD:-}" ]; then
+        if [ -n "${RCLONE_CONFIG_PATH:-}" ] && [ -f "$RCLONE_CONFIG_PATH" ]; then
+            kubectl create secret generic adsblol-rclone \
+                --from-file=rclone.conf="$RCLONE_CONFIG_PATH" \
+                -n bharatradar --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+            log_success "Rclone secret created from: $RCLONE_CONFIG_PATH"
+        elif [ -n "${MINIO_ENDPOINT:-}" ] && [ -n "${MINIO_ROOT_USER:-}" ] && [ -n "${MINIO_ROOT_PASSWORD:-}" ]; then
             kubectl create secret generic adsblol-rclone \
                 --from-literal=rclone.conf="[adsblol]
 type = s3
