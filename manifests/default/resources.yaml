@@ -279,6 +279,13 @@ spec:
             name: api
             port:
               name: http
+      - path: /api/0/mlat-server
+        pathType: Prefix
+        backend:
+          service:
+            name: mlat-mlat-server
+            port:
+              number: 150
 ---
 # Rewrite /synctable/0A/ to /synctable/all/
 kind: Ingress

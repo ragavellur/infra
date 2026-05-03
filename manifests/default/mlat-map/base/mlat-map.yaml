@@ -13,6 +13,9 @@ spec:
         ports:
         - containerPort: 80
           name: http
+        env:
+        - name: MLAT_SERVER_API
+          value: "http://mlat-mlat-server.bharatradar.svc.cluster.local:150/api/0/mlat-server"
         resources:
           requests:
             cpu: 100m
