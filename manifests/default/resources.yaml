@@ -4,40 +4,48 @@ kind: Namespace
 metadata:
   name: bharatradar
 ---
+# Direct LoadBalancer for ADS-B beast traffic (bypasses haproxy)
 apiVersion: v1
 kind: Service
 metadata:
   name: ingest
   annotations:
     external-dns.alpha.kubernetes.io/hostname: feed.bharat-radar.vellur.in
-    load-balancer.hetzner.cloud/location: fsn1
-    load-balancer.hetzner.cloud/uses-proxyprotocol: "true"
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
 spec:
   internalTrafficPolicy: Local
   externalTrafficPolicy: Local
   selector:
-    app: haproxy
+    app: ingest
+    service: public
   ports:
-  - name: beast-1337
-    port: 1337
-    targetPort: beast-1337
-    protocol: TCP
-  - name: mlat-1338
-    port: 1338
-    targetPort: mlat-1338
-    protocol: TCP
   - name: beast-30004
     port: 30004
-    targetPort: beast-30004
+    targetPort: adsb-in
     protocol: TCP
   - name: beast-30005
     port: 30005
-    targetPort: beast-30005
+    targetPort: adsb-out
     protocol: TCP
+  type: LoadBalancer
+---
+# Direct LoadBalancer for MLAT traffic (bypasses haproxy)
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlat-lb
+  annotations:
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
+spec:
+  internalTrafficPolicy: Local
+  externalTrafficPolicy: Local
+  selector:
+    app: mlat
+    service: public
+  ports:
   - name: mlat-31090
     port: 31090
-    targetPort: mlat-31090
+    targetPort: mlat-in
     protocol: TCP
   type: LoadBalancer
 ---

@@ -16,7 +16,8 @@ data:
       location /api/0/mlat-server/ {
         resolver 10.43.0.10 valid=5s;
         set $mlat_backend mlat-mlat-server.bharatradar.svc.cluster.local;
-        proxy_pass http://$mlat_backend:150$request_uri;
+        rewrite ^/api/0/mlat-server/[^/]+/(.*)$ /$1 break;
+        proxy_pass http://$mlat_backend:150;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_connect_timeout 5s;
