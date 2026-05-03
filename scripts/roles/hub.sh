@@ -555,7 +555,12 @@ role_hub_deploy_services() {
             return 1
         fi
         
-        echo "$built" | awk 'BEGIN{RS="---"; ORS="---"} !/kind: ServiceMonitor/ && /kind:/' | kubectl apply -f - -n bharatradar 2>&1
+        echo "$built" | awk 'BEGIN{RS="---"; ORS="---"}
+            !/kind: ServiceMonitor/ &&
+            !/kind: ImagePolicy/ &&
+            !/kind: ImageRepository/ &&
+            !/kind: ImageUpdateAutomation/ &&
+            /kind:/' | kubectl apply -f - -n bharatradar 2>&1
         rc=$?
         if [ $rc -ne 0 ]; then
             log_error "kubectl apply failed for ${component}"
