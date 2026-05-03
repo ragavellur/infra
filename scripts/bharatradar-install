@@ -45,8 +45,8 @@ if [ "$SELF_INSTALL" = true ]; then
                 mkdir -p "${TMPDIR}/$(dirname "$f")"
                 curl -sL "https://raw.githubusercontent.com/ragavellur/infra/main/${f}" -o "${TMPDIR}/${f}"
             done
-            # Download manifests for hub role
-            curl -sL "https://github.com/ragavellur/infra/archive/refs/heads/main.tar.gz" | tar xz -C "${TMPDIR}" --strip-components=1 "infra-main/manifests" 2>/dev/null || true
+            # Download manifests and bases for hub role
+            curl -sL "https://github.com/ragavellur/infra/archive/refs/heads/main.tar.gz" | tar xz -C "${TMPDIR}" --strip-components=1 "infra-main/manifests" "infra-main/bases" 2>/dev/null || true
             chmod +x "${TMPDIR}/scripts/bharatradar-install"
             exec bash "${TMPDIR}/scripts/bharatradar-install" "$@"
         }
@@ -56,7 +56,7 @@ if [ "$SELF_INSTALL" = true ]; then
     if [ -d "${TMPDIR}/infra/.git" ]; then
         cd "${TMPDIR}/infra"
         git sparse-checkout init --cone 2>/dev/null || true
-        git sparse-checkout set scripts manifests 2>/dev/null || true
+        git sparse-checkout set scripts manifests bases 2>/dev/null || true
         git checkout 2>/dev/null || true
         cd - >/dev/null
     fi
