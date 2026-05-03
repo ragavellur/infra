@@ -19,6 +19,8 @@ spec:
           value: "ingest-readsb-headless.bharatradar.svc.cluster.local"
         - name: MY_DOMAIN
           value: "my.bharat-radar.vellur.in"
+        - name: ADSBLOL_REDIS_HOST
+          value: "redis://:c4v2qHF218GQIgtpEkET1mTpe9OE0tEJ50EN4@192.168.200.187:6379"
         resources:
           requests:
             cpu: 100m
