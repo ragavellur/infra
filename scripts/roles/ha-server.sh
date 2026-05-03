@@ -130,6 +130,7 @@ role_ha_server_install_k3s() {
 
 role_ha_server_setup_keepalived() {
     if [ "$KEEPALIVED_ENABLED" = true ]; then
+        source "${SCRIPT_DIR}/roles/keepalived.sh"
         keepalived_install
         keepalived_configure
     fi
@@ -212,7 +213,21 @@ role_ha_server_run() {
 
     # Phase: config
     if ! checkpoint_completed "config"; then
-        role_ha_server_collect_config
+        # Skip interactive prompts if all required vars are already set (silent mode)
+        if [ -n "${DB_CONNECTION_STRING:-}" ] && [ -n "${K3S_CLUSTER_TOKEN:-}" ] && [ -n "${PRIMARY_HUB_IP:-}" ] && [ -n "${BASE_DOMAIN:-}" ]; then
+            log_info "Using provided configuration (silent mode)"
+            # Ensure defaults for optional vars
+            KEEPALIVED_ENABLED="${KEEPALIVED_ENABLED:-false}"
+            KEEPALIVED_STATE="${KEEPALIVED_STATE:-BACKUP}"
+            KEEPALIVED_PRIORITY="${KEEPALIVED_PRIORITY:-90}"
+            KEEPALIVED_VIP="${KEEPALIVED_VIP:-}"
+            DB_HOST="${DB_HOST:-}"
+            DB_PORT="${DB_PORT:-5432}"
+            DB_DBNAME="${DB_DBNAME:-k3s}"
+            DB_DBUSER="${DB_DBUSER:-k3s}"
+        else
+            role_ha_server_collect_config
+        fi
 
         save_config_value "ROLE" "ha-server"
         save_config_value "BASE_DOMAIN" "${BASE_DOMAIN}"
