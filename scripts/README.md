@@ -186,8 +186,15 @@ bharatradar-install (no args)
 │
 └── [5] Post-install
       ├── Configuration saved to /etc/bharatradar/
+      ├── Checkpoint cleared (install complete)
       ├── Health verification
       └── URLs, credentials, and next steps displayed
+
+Checkpoint / Resume (automatic on all roles):
+- Each role tracks completed phases in /etc/bharatradar/.install-progress
+- Config answers saved to /etc/bharatradar/.config.partial
+- Re-run the same command to resume from the last successful phase
+- To restart from scratch: rm /etc/bharatradar/.install-progress /etc/bharatradar/.config.partial
 ```
 
 ## Node Roles
@@ -269,4 +276,43 @@ sudo ./bharatradar-install remove-node
 
 # Full uninstall and clean start
 sudo ./bharatradar-install uninstall
+```
+
+## Checkpoint / Resume
+
+All roles automatically save progress and can resume from failures.
+
+### How It Works
+
+- **Phase tracking:** `/etc/bharatradar/.install-progress` lists completed phases
+- **Config cache:** `/etc/bharatradar/.config.partial` stores all answers
+- **Resume banner:** On restart, shows ✓ (complete) and ✗ (pending) phases
+
+### Resume a Failed Install
+
+Simply re-run the same command. No need to re-answer questions.
+
+```bash
+# Interactive
+sudo ./bharatradar-install hub
+
+# Non-interactive
+curl -Ls ... | sudo bash -s -- hub
+
+# Silent
+sudo ./bharatradar-install --conf-file /tmp/hub.env hub
+```
+
+### View Progress
+
+```bash
+cat /etc/bharatradar/.install-progress
+cat /etc/bharatradar/.config.partial
+```
+
+### Restart from Scratch
+
+```bash
+sudo rm -f /etc/bharatradar/.install-progress /etc/bharatradar/.config.partial
+sudo ./bharatradar-install <role>
 ```

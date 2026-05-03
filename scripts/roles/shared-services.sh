@@ -606,6 +606,9 @@ role_shared_services_run() {
     require_root
 
     local install_failed=false
+    local phases=(config packages postgresql redis influxdb minio save)
+
+    show_resume_banner "${phases[@]}"
 
     # Load existing config if present
     if [ -f /etc/bharatradar/db-config.env ]; then
@@ -614,27 +617,88 @@ role_shared_services_run() {
         DB_PORT="${DB_PORT:-5432}"
     fi
 
-    role_shared_services_collect_config
+    # Phase: config
+    if ! checkpoint_completed "config"; then
+        role_shared_services_collect_config
 
-    # Critical services - must succeed for K3s to work
-    role_shared_services_install_packages || install_failed=true
-    role_shared_services_install_postgresql || install_failed=true
-    role_shared_services_configure_postgresql || install_failed=true
-    role_shared_services_install_redis || install_failed=true
-    role_shared_services_configure_redis || install_failed=true
+        # Save all answers for resume support
+        save_config_value "ROLE" "shared-services"
+        save_config_value "SUB_ROLE" "${SUB_ROLE:-primary}"
+        save_config_value "DB_LISTEN_IP" "${DB_LISTEN_IP}"
+        save_config_value "DB_PORT" "${DB_PORT:-5432}"
+        save_config_value "DB_PASSWORD" "${DB_PASSWORD}"
+        save_config_value "DB_USER" "${DB_USER:-k3s}"
+        save_config_value "DB_NAME" "${DB_NAME:-k3s}"
+        save_config_value "REDIS_PASSWORD" "${REDIS_PASSWORD}"
+        save_config_value "INFLUXDB_ADMIN_TOKEN" "${INFLUXDB_ADMIN_TOKEN}"
+        save_config_value "MINIO_ROOT_USER" "${MINIO_ROOT_USER:-minioadmin}"
+        save_config_value "MINIO_ROOT_PASSWORD" "${MINIO_ROOT_PASSWORD}"
 
-    # Optional services - failures are non-fatal
-    role_shared_services_install_influxdb || log_warn "InfluxDB installation skipped/failed"
-    role_shared_services_configure_influxdb || log_warn "InfluxDB configuration skipped/failed"
-    role_shared_services_install_minio || log_warn "MinIO installation skipped/failed"
-    role_shared_services_configure_minio || log_warn "MinIO configuration skipped/failed"
-
-    # Always save config and show credentials
-    role_shared_services_save_config
-    role_shared_services_post_install
-
-    if [ "$install_failed" = true ]; then
-        log_error "Critical service installation failed. Check the output above."
-        exit 1
+        checkpoint_mark "config"
+    else
+        load_partial_config || {
+            log_error "Saved config not found. To restart from scratch, run:"
+            echo "  sudo rm /etc/bharatradar/.install-progress /etc/bharatradar/.config.partial"
+            exit 1
+        }
     fi
+
+    # Phase: packages
+    if ! checkpoint_completed "packages"; then
+        role_shared_services_install_packages || install_failed=true
+        if [ "$install_failed" = true ]; then
+            log_error "Package installation failed. To retry, run:"
+            echo "  sudo ./bharatradar-install shared-services"
+            exit 1
+        fi
+        checkpoint_mark "packages"
+    fi
+
+    # Phase: postgresql
+    if ! checkpoint_completed "postgresql"; then
+        role_shared_services_install_postgresql || install_failed=true
+        role_shared_services_configure_postgresql || install_failed=true
+        if [ "$install_failed" = true ]; then
+            log_error "PostgreSQL setup failed. To retry, run:"
+            echo "  sudo ./bharatradar-install shared-services"
+            exit 1
+        fi
+        checkpoint_mark "postgresql"
+    fi
+
+    # Phase: redis
+    if ! checkpoint_completed "redis"; then
+        role_shared_services_install_redis || install_failed=true
+        role_shared_services_configure_redis || install_failed=true
+        if [ "$install_failed" = true ]; then
+            log_error "Redis setup failed. To retry, run:"
+            echo "  sudo ./bharatradar-install shared-services"
+            exit 1
+        fi
+        checkpoint_mark "redis"
+    fi
+
+    # Phase: influxdb (optional)
+    if ! checkpoint_completed "influxdb"; then
+        role_shared_services_install_influxdb || log_warn "InfluxDB installation skipped/failed"
+        role_shared_services_configure_influxdb || log_warn "InfluxDB configuration skipped/failed"
+        checkpoint_mark "influxdb"
+    fi
+
+    # Phase: minio (optional)
+    if ! checkpoint_completed "minio"; then
+        role_shared_services_install_minio || log_warn "MinIO installation skipped/failed"
+        role_shared_services_configure_minio || log_warn "MinIO configuration skipped/failed"
+        checkpoint_mark "minio"
+    fi
+
+    # Phase: save
+    if ! checkpoint_completed "save"; then
+        role_shared_services_save_config
+        role_shared_services_post_install
+        checkpoint_mark "save"
+    fi
+
+    checkpoint_clear
+    log_success "Shared Services installation complete!"
 }

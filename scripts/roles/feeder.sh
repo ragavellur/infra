@@ -342,6 +342,10 @@ role_feeder_post_install() {
 role_feeder_run() {
     require_root
 
+    local phases=(config packages readsb mlat_client configure services start save)
+
+    show_resume_banner "${phases[@]}"
+
     # Load existing config if present
     if [ -f /etc/bharatradar/config.env ]; then
         source /etc/bharatradar/config.env
@@ -350,14 +354,92 @@ role_feeder_run() {
         READSB_LON="${READSB_LON:-}"
     fi
 
-    role_feeder_collect_config
-    role_feeder_install_packages
-    role_feeder_install_readsb
-    role_feeder_install_mlat_client
-    role_feeder_configure_readsb
-    role_feeder_create_feeder_service
-    role_feeder_create_mlat_service
-    role_feeder_start_services
-    role_feeder_save_config
-    role_feeder_post_install
+    # Phase: config
+    if ! checkpoint_completed "config"; then
+        role_feeder_collect_config
+
+        save_config_value "ROLE" "feeder"
+        save_config_value "FEEDER_DOMAIN" "${FEEDER_DOMAIN}"
+        save_config_value "READSB_LAT" "${READSB_LAT}"
+        save_config_value "READSB_LON" "${READSB_LON}"
+        save_config_value "FEEDER_ALT_M" "${FEEDER_ALT_M:-10}"
+        save_config_value "FEEDER_UUID" "${FEEDER_UUID}"
+        save_config_value "FEEDER_NAME" "${FEEDER_NAME}"
+        save_config_value "SDR_SERIAL" "${SDR_SERIAL:-0}"
+        save_config_value "MLAT_PRIVACY" "${MLAT_PRIVACY:-}"
+
+        checkpoint_mark "config"
+    else
+        load_partial_config || {
+            log_error "Saved config not found. To restart from scratch, run:"
+            echo "  sudo rm /etc/bharatradar/.install-progress /etc/bharatradar/.config.partial"
+            exit 1
+        }
+    fi
+
+    # Phase: packages
+    if ! checkpoint_completed "packages"; then
+        role_feeder_install_packages || {
+            log_error "Package installation failed. To retry, run:"
+            echo "  sudo ./bharatradar-install feeder"
+            exit 1
+        }
+        checkpoint_mark "packages"
+    fi
+
+    # Phase: readsb
+    if ! checkpoint_completed "readsb"; then
+        role_feeder_install_readsb || {
+            log_error "readsb installation failed. To retry, run:"
+            echo "  sudo ./bharatradar-install feeder"
+            exit 1
+        }
+        checkpoint_mark "readsb"
+    fi
+
+    # Phase: mlat_client
+    if ! checkpoint_completed "mlat_client"; then
+        role_feeder_install_mlat_client || {
+            log_error "mlat-client installation failed. To retry, run:"
+            echo "  sudo ./bharatradar-install feeder"
+            exit 1
+        }
+        checkpoint_mark "mlat_client"
+    fi
+
+    # Phase: configure
+    if ! checkpoint_completed "configure"; then
+        role_feeder_configure_readsb || {
+            log_error "readsb configuration failed. To retry, run:"
+            echo "  sudo ./bharatradar-install feeder"
+            exit 1
+        }
+        checkpoint_mark "configure"
+    fi
+
+    # Phase: services
+    if ! checkpoint_completed "services"; then
+        role_feeder_create_feeder_service
+        role_feeder_create_mlat_service
+        checkpoint_mark "services"
+    fi
+
+    # Phase: start
+    if ! checkpoint_completed "start"; then
+        role_feeder_start_services || {
+            log_warn "Some services failed to start. Check with:"
+            echo "  sudo systemctl status bharat-feeder bharat-mlat"
+        }
+        checkpoint_mark "start"
+    fi
+
+    # Phase: save
+    if ! checkpoint_completed "save"; then
+        role_feeder_save_config
+        role_feeder_post_install
+        checkpoint_mark "save"
+    fi
+
+    checkpoint_clear
+    log_success "Feeder Pi installation complete!"
 }

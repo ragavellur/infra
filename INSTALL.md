@@ -1,6 +1,6 @@
 # BharatRadar Infrastructure - Installation Guide
 
-> **Version:** 2.0.0
+> **Version:** 3.0.0
 > **Last Updated:** May 2026
 > **GitHub:** https://github.com/ragavellur/infra
 
@@ -13,16 +13,20 @@ Complete guide to deploying the BharatRadar ADS-B/MLAT aggregator platform with 
 1. [Architecture Overview](#architecture-overview)
 2. [Prerequisites](#prerequisites)
 3. [Quick Start](#quick-start)
-4. [Step-by-Step Installation](#step-by-step-installation)
-5. [Custom Docker Images](#custom-docker-images)
-6. [FRP Server Setup (AWS/Cloud)](#frp-server-setup-awscloud)
-7. [FRP Client Setup (Hub Node)](#frp-client-setup-hub-node)
-8. [Feeder Pi Setup](#feeder-pi-setup)
-9. [SSL/TLS Configuration](#ssltls-configuration)
-10. [Cluster Management](#cluster-management)
-11. [Configuration Reference](#configuration-reference)
-12. [Troubleshooting](#troubleshooting)
-13. [Useful Commands](#useful-commands)
+4. [Online Install (Non-Interactive)](#online-install-non-interactive)
+5. [Silent Installation](#silent-installation)
+6. [Checkpoint / Resume](#checkpoint--resume)
+7. [Silent Configuration Reference](#silent-configuration-reference)
+8. [Step-by-Step Installation](#step-by-step-installation)
+9. [Custom Docker Images](#custom-docker-images)
+10. [FRP Server Setup (AWS/Cloud)](#frp-server-setup-awscloud)
+11. [FRP Client Setup (Hub Node)](#frp-client-setup-hub-node)
+12. [Feeder Pi Setup](#feeder-pi-setup)
+13. [SSL/TLS Configuration](#ssltls-configuration)
+14. [Cluster Management](#cluster-management)
+15. [Configuration Reference](#configuration-reference)
+16. [Troubleshooting](#troubleshooting)
+17. [Useful Commands](#useful-commands)
 
 ---
 
@@ -195,6 +199,266 @@ curl -sfL https://get.k3s.io | \
   K3S_TOKEN=$TOKEN \
   sh -
 ```
+
+---
+
+## Online Install (Non-Interactive)
+
+Run the appropriate one-liner on each machine. The installer will prompt only for required information and automatically resume from failures.
+
+```bash
+# Step 1: Shared Services (PostgreSQL + Redis + InfluxDB + MinIO)
+# Always prompts for primary or standby mode
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- shared-services
+
+# Step 2: Primary Hub (first K3s server, creates cluster)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- hub
+
+# Step 3a: HA Server (second K3s server, shares control plane)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- ha-server
+
+# Step 3b: Worker Node (K3s agent, runs pods only)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- worker
+
+# DB Standby (PostgreSQL streaming replica for failover)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- db-standby
+
+# Feeder Pi (RTL-SDR receiver, standalone)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- feeder
+
+# FRP Server (Cloud/VPS with public IP)
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- frp-server
+```
+
+> **Note:** If the script is interrupted (network error, package failure, etc.), simply re-run the same command. It will detect saved progress and resume from the last completed phase. See [Checkpoint / Resume](#checkpoint--resume) below.
+
+---
+
+## Silent Installation
+
+For fully automated, non-interactive installs, create a configuration file with all required variables and pass it with `--conf-file` (or `-c`).
+
+### 1. Create a Config File
+
+Create a file (e.g., `/tmp/bharatradar.env`) with the variables for your role:
+
+**Example: Hub**
+```bash
+cat > /tmp/hub.env << 'EOF'
+ROLE=hub
+BASE_DOMAIN=bharat-radar.vellur.in
+READSB_LAT=18.480718
+READSB_LON=73.898235
+TIMEZONE=Asia/Kolkata
+REDIS_HOST=192.168.200.187
+REDIS_PORT=6379
+REDIS_PASSWORD=your-redis-password
+GHCR_USERNAME=your-github-user
+GHCR_PASSWORD=your-github-pat
+USE_EXTERNAL_DB=true
+DB_HOST=192.168.200.187
+DB_PORT=5432
+DB_DBNAME=k3s
+DB_DBUSER=k3s
+DB_DBPASS=your-db-password
+MINIO_ENDPOINT=192.168.200.187:9000
+MINIO_ROOT_USER=minioadmin
+MINIO_ROOT_PASSWORD=your-minio-password
+FRP_ENABLED=false
+KEEPALIVED_ENABLED=false
+EOF
+```
+
+**Example: Worker**
+```bash
+cat > /tmp/worker.env << 'EOF'
+ROLE=worker
+HUB_IP=192.168.200.145
+K3S_TOKEN=K10xxxxxxxx::server:xxxxxxxx
+BASE_DOMAIN=bharat-radar.vellur.in
+EOF
+```
+
+### 2. Run the Installer
+
+```bash
+# Local
+sudo ./bharatradar-install --conf-file /tmp/hub.env hub
+
+# Online
+# When piping via curl, write the config to a file first, then reference it
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- --conf-file /tmp/hub.env hub
+```
+
+### 3. Resume on Failure
+
+If a silent install fails mid-way, re-run the exact same command. The installer will:
+- Load saved answers from `/etc/bharatradar/.config.partial`
+- Skip phases already marked complete in `/etc/bharatradar/.install-progress`
+- Resume from the first pending phase
+
+```bash
+# Retry the exact same command — no re-prompting
+sudo ./bharatradar-install --conf-file /tmp/hub.env hub
+```
+
+### 4. Force Restart from Scratch
+
+```bash
+sudo rm -f /etc/bharatradar/.install-progress /etc/bharatradar/.config.partial
+sudo ./bharatradar-install --conf-file /tmp/hub.env hub
+```
+
+---
+
+## Checkpoint / Resume
+
+All roles now support automatic checkpoint/resume. If the installer is interrupted, re-running it will skip completed phases and continue from where it left off.
+
+### How It Works
+
+- **Config answers** are saved to `/etc/bharatradar/.config.partial`
+- **Completed phases** are tracked in `/etc/bharatradar/.install-progress`
+- On restart, a resume banner shows which phases are complete (✓) and which are pending (✗)
+
+### Resume Examples
+
+```bash
+# Interactive mode — re-run, it resumes automatically
+sudo ./bharatradar-install hub
+
+# Non-interactive mode — same command resumes
+curl -Ls https://raw.githubusercontent.com/ragavellur/infra/main/scripts/bharatradar-install | sudo bash -s -- hub
+
+# Silent mode — same file resumes
+sudo ./bharatradar-install --conf-file /tmp/hub.env hub
+```
+
+### View Saved Progress
+
+```bash
+cat /etc/bharatradar/.install-progress
+cat /etc/bharatradar/.config.partial
+```
+
+### Checkpoint Phases by Role
+
+| Role | Phases |
+|------|--------|
+| **hub** | `config` → `k3s` → `secrets` → `deploy` → `verify` |
+| **shared-services** | `config` → `packages` → `postgresql` → `redis` → `influxdb` → `minio` → `save` |
+| **feeder** | `config` → `packages` → `readsb` → `mlat_client` → `configure` → `services` → `start` → `save` |
+| **worker** | `config` → `k3s` → `cli` → `save` |
+| **ha-server** | `config` → `k3s` → `kubectl` → `cli` → `keepalived` → `save` |
+| **db-standby** | `config` → `install` → `replication` → `save` |
+| **frp-server** | `config` → `packages` → `binary` → `frp` → `nginx` → `ssl` → `save` |
+
+### Force Restart from Beginning
+
+```bash
+sudo rm -f /etc/bharatradar/.install-progress /etc/bharatradar/.config.partial
+sudo ./bharatradar-install <role>
+```
+
+---
+
+## Silent Configuration Reference
+
+Below are all environment variables accepted by each role for silent installation.
+
+### Shared Services (`shared-services`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SUB_ROLE` | `primary` | `primary` or `replica` (replica redirects to db-standby) |
+| `DB_LISTEN_IP` | (detected) | IP address PostgreSQL/Redis should bind to |
+| `DB_PORT` | `5432` | PostgreSQL port |
+
+> **Note:** Passwords are auto-generated if not provided: `DB_PASSWORD`, `REDIS_PASSWORD`, `INFLUXDB_ADMIN_TOKEN`, `MINIO_ROOT_PASSWORD`
+
+### Hub (`hub`)
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `BASE_DOMAIN` | — | Yes | Base domain (e.g., `bharat-radar.vellur.in`) |
+| `READSB_LAT` | `18.480718` | No | Receiver latitude |
+| `READSB_LON` | `73.898235` | No | Receiver longitude |
+| `TIMEZONE` | `UTC` | No | Timezone (e.g., `Asia/Kolkata`) |
+| `REDIS_HOST` | — | Yes | Redis server IP |
+| `REDIS_PORT` | `6379` | No | Redis port |
+| `REDIS_PASSWORD` | — | Yes | Redis password |
+| `GHCR_USERNAME` | — | Yes | GitHub username for GHCR |
+| `GHCR_PASSWORD` | — | Yes | GitHub PAT with `read:packages` |
+| `USE_EXTERNAL_DB` | `false` | No | `true` = external PostgreSQL, `false` = embedded etcd |
+| `DB_HOST` | — | If `USE_EXTERNAL_DB=true` | PostgreSQL host IP |
+| `DB_PORT` | `5432` | No | PostgreSQL port |
+| `DB_DBNAME` | `k3s` | No | PostgreSQL database name |
+| `DB_DBUSER` | `k3s` | No | PostgreSQL username |
+| `DB_DBPASS` | — | If `USE_EXTERNAL_DB=true` | PostgreSQL password |
+| `MINIO_ENDPOINT` | — | No | MinIO host:port (e.g., `192.168.200.187:9000`) |
+| `MINIO_ROOT_USER` | `minioadmin` | No | MinIO access key |
+| `MINIO_ROOT_PASSWORD` | — | If using MinIO | MinIO secret key |
+| `RCLONE_CONFIG_PATH` | — | No | Path to existing rclone.conf (alternative to MinIO) |
+| `FRP_ENABLED` | `false` | No | `true` to enable FRP tunnel |
+| `FRP_SERVER` | — | If `FRP_ENABLED=true` | FRP server public IP |
+| `FRP_TOKEN` | — | If `FRP_ENABLED=true` | FRP authentication token |
+| `KEEPALIVED_ENABLED` | `false` | No | `true` to enable Keepalived VIP |
+| `KEEPALIVED_VIP` | — | If `KEEPALIVED_ENABLED=true` | Virtual IP address |
+
+### HA Server (`ha-server`)
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `BASE_DOMAIN` | — | Yes | Base domain |
+| `DB_HOST` | — | Yes | PostgreSQL host IP |
+| `DB_PORT` | `5432` | No | PostgreSQL port |
+| `DB_DBNAME` | `k3s` | No | PostgreSQL database name |
+| `DB_DBUSER` | `k3s` | No | PostgreSQL username |
+| `DB_DBPASS` | — | Yes | PostgreSQL password |
+| `K3S_CLUSTER_TOKEN` | — | Yes | K3s cluster token from Primary Hub |
+| `PRIMARY_HUB_IP` | — | Yes | Primary Hub IP address |
+| `KEEPALIVED_ENABLED` | `false` | No | `true` to enable Keepalived |
+| `KEEPALIVED_VIP` | — | If enabled | Virtual IP address |
+| `KEEPALIVED_STATE` | `BACKUP` | No | `MASTER` or `BACKUP` |
+
+### Worker (`worker`)
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `HUB_IP` | — | Yes | Primary Hub IP |
+| `K3S_TOKEN` | — | Yes | K3s join token |
+| `BASE_DOMAIN` | — | Yes | Base domain |
+
+### Feeder (`feeder`)
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `FEEDER_DOMAIN` | `feed.bharat-radar.vellur.in` | No | Feeder endpoint domain |
+| `READSB_LAT` | `18.480718` | No | Receiver latitude |
+| `READSB_LON` | `73.898235` | No | Receiver longitude |
+| `FEEDER_ALT_M` | `10` | No | Antenna altitude (meters) |
+| `FEEDER_UUID` | (generated) | No | Feeder UUID (auto-generated if empty) |
+| `FEEDER_NAME` | (generated) | No | Display name on MLAT map |
+| `SDR_SERIAL` | `0` | No | RTL-SDR serial number |
+| `MLAT_PRIVACY` | — | No | Set to `--privacy` to hide from map |
+
+### DB Standby (`db-standby`)
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `PRIMARY_DB_IP` | — | Yes | Primary PostgreSQL server IP |
+| `PRIMARY_DB_USER` | `bharatradar` | No | SSH username on primary |
+| `PRIMARY_DB_PASSWORD` | — | Yes | Primary DB password |
+| `STANDBY_IP` | (detected) | No | This machine's IP |
+
+### FRP Server (`frp-server`)
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `BASE_DOMAIN` | — | Yes | Base domain |
+| `EMAIL` | — | Yes | Let's Encrypt email |
+| `FRP_AUTH_TOKEN` | (generated) | No | FRP auth token (auto-generated) |
+| `FRPS_DASHBOARD_PASS` | (generated) | No | Dashboard password (auto-generated) |
 
 ---
 

@@ -147,6 +147,10 @@ role_worker_post_install() {
 role_worker_run() {
     require_root
 
+    local phases=(config k3s cli save)
+
+    show_resume_banner "${phases[@]}"
+
     if [ -f /etc/bharatradar/config.env ]; then
         source /etc/bharatradar/config.env
         HUB_IP="${HUB_IP:-}"
@@ -154,9 +158,47 @@ role_worker_run() {
         BASE_DOMAIN="${BASE_DOMAIN:-}"
     fi
 
-    role_worker_collect_config
-    role_worker_install_k3s_agent
-    install_bharatradar_cli
-    role_worker_save_config
-    role_worker_post_install
+    # Phase: config
+    if ! checkpoint_completed "config"; then
+        role_worker_collect_config
+
+        save_config_value "ROLE" "worker"
+        save_config_value "HUB_IP" "${HUB_IP}"
+        save_config_value "K3S_TOKEN" "${K3S_TOKEN}"
+        save_config_value "BASE_DOMAIN" "${BASE_DOMAIN}"
+
+        checkpoint_mark "config"
+    else
+        load_partial_config || {
+            log_error "Saved config not found. To restart from scratch, run:"
+            echo "  sudo rm /etc/bharatradar/.install-progress /etc/bharatradar/.config.partial"
+            exit 1
+        }
+    fi
+
+    # Phase: k3s
+    if ! checkpoint_completed "k3s"; then
+        role_worker_install_k3s_agent || {
+            log_error "K3s agent installation failed. To retry, run:"
+            echo "  sudo ./bharatradar-install worker"
+            exit 1
+        }
+        checkpoint_mark "k3s"
+    fi
+
+    # Phase: cli
+    if ! checkpoint_completed "cli"; then
+        install_bharatradar_cli
+        checkpoint_mark "cli"
+    fi
+
+    # Phase: save
+    if ! checkpoint_completed "save"; then
+        role_worker_save_config
+        role_worker_post_install
+        checkpoint_mark "save"
+    fi
+
+    checkpoint_clear
+    log_success "Worker node installation complete!"
 }

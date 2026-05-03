@@ -193,6 +193,10 @@ role_ha_server_post_install() {
 role_ha_server_run() {
     require_root
 
+    local phases=(config k3s kubectl cli keepalived save)
+
+    show_resume_banner "${phases[@]}"
+
     # Load existing config if present
     if [ -f /etc/bharatradar/config.env ]; then
         source /etc/bharatradar/config.env
@@ -206,11 +210,68 @@ role_ha_server_run() {
         PRIMARY_HUB_IP="${PRIMARY_HUB_IP:-}"
     fi
 
-    role_ha_server_collect_config
-    role_ha_server_install_k3s
-    setup_kubectl
-    install_bharatradar_cli
-    role_ha_server_setup_keepalived
-    role_ha_server_save_config
-    role_ha_server_post_install
+    # Phase: config
+    if ! checkpoint_completed "config"; then
+        role_ha_server_collect_config
+
+        save_config_value "ROLE" "ha-server"
+        save_config_value "BASE_DOMAIN" "${BASE_DOMAIN}"
+        save_config_value "DB_HOST" "${DB_HOST:-}"
+        save_config_value "DB_PORT" "${DB_PORT:-5432}"
+        save_config_value "DB_DBNAME" "${DB_DBNAME:-k3s}"
+        save_config_value "DB_DBUSER" "${DB_DBUSER:-k3s}"
+        save_config_value "DB_DBPASS" "${DB_DBPASS:-}"
+        save_config_value "DB_CONNECTION_STRING" "${DB_CONNECTION_STRING:-}"
+        save_config_value "K3S_CLUSTER_TOKEN" "${K3S_CLUSTER_TOKEN}"
+        save_config_value "PRIMARY_HUB_IP" "${PRIMARY_HUB_IP}"
+        save_config_value "KEEPALIVED_ENABLED" "${KEEPALIVED_ENABLED:-false}"
+        save_config_value "KEEPALIVED_VIP" "${KEEPALIVED_VIP:-}"
+        save_config_value "KEEPALIVED_STATE" "${KEEPALIVED_STATE:-BACKUP}"
+
+        checkpoint_mark "config"
+    else
+        load_partial_config || {
+            log_error "Saved config not found. To restart from scratch, run:"
+            echo "  sudo rm /etc/bharatradar/.install-progress /etc/bharatradar/.config.partial"
+            exit 1
+        }
+    fi
+
+    # Phase: k3s
+    if ! checkpoint_completed "k3s"; then
+        role_ha_server_install_k3s || {
+            log_error "K3s installation failed. To retry, run:"
+            echo "  sudo ./bharatradar-install ha-server"
+            exit 1
+        }
+        checkpoint_mark "k3s"
+    fi
+
+    # Phase: kubectl
+    if ! checkpoint_completed "kubectl"; then
+        setup_kubectl
+        checkpoint_mark "kubectl"
+    fi
+
+    # Phase: cli
+    if ! checkpoint_completed "cli"; then
+        install_bharatradar_cli
+        checkpoint_mark "cli"
+    fi
+
+    # Phase: keepalived
+    if ! checkpoint_completed "keepalived"; then
+        role_ha_server_setup_keepalived || log_warn "Keepalived setup skipped/failed"
+        checkpoint_mark "keepalived"
+    fi
+
+    # Phase: save
+    if ! checkpoint_completed "save"; then
+        role_ha_server_save_config
+        role_ha_server_post_install
+        checkpoint_mark "save"
+    fi
+
+    checkpoint_clear
+    log_success "HA Server installation complete!"
 }

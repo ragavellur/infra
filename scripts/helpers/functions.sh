@@ -336,6 +336,8 @@ retry_with_backoff() {
 }
 
 # Show resume banner if we have saved progress
+# Usage: show_resume_banner [phase1 phase2 phase3 ...]
+# If no phases provided, defaults to hub phases for backward compatibility.
 show_resume_banner() {
     if [ ! -f "$checkpoint_file" ]; then
         return
@@ -351,7 +353,12 @@ show_resume_banner() {
         log_info "Saved progress from: ${saved_date}"
     fi
 
-    for phase in config k3s secrets deploy verify; do
+    local phases=("$@")
+    if [ ${#phases[@]} -eq 0 ]; then
+        phases=(config k3s secrets deploy verify)
+    fi
+
+    for phase in "${phases[@]}"; do
         if checkpoint_completed "$phase"; then
             echo -e "  ${GREEN}✓${NC} Phase: ${phase}"
         else

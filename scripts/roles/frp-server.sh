@@ -320,6 +320,10 @@ role_frps_post_install() {
 role_frps_run() {
     require_root
 
+    local phases=(config packages binary frp nginx ssl save)
+
+    show_resume_banner "${phases[@]}"
+
     # Load existing config if present
     if [ -f /etc/bharatradar/frps-config.env ]; then
         source /etc/bharatradar/frps-config.env
@@ -328,12 +332,81 @@ role_frps_run() {
         FRP_AUTH_TOKEN="${FRP_AUTH_TOKEN:-}"
     fi
 
-    role_frps_collect_config
-    role_frps_install_packages
-    role_frps_install_binary
-    role_frps_configure
-    role_frps_configure_nginx
-    role_frps_setup_ssl
-    role_frps_save_config
-    role_frps_post_install
+    # Phase: config
+    if ! checkpoint_completed "config"; then
+        role_frps_collect_config
+
+        save_config_value "ROLE" "frp-server"
+        save_config_value "BASE_DOMAIN" "${BASE_DOMAIN}"
+        save_config_value "EMAIL" "${EMAIL}"
+        save_config_value "FRP_AUTH_TOKEN" "${FRP_AUTH_TOKEN}"
+        save_config_value "FRPS_DASHBOARD_PASS" "${FRPS_DASHBOARD_PASS}"
+
+        checkpoint_mark "config"
+    else
+        load_partial_config || {
+            log_error "Saved config not found. To restart from scratch, run:"
+            echo "  sudo rm /etc/bharatradar/.install-progress /etc/bharatradar/.config.partial"
+            exit 1
+        }
+    fi
+
+    # Phase: packages
+    if ! checkpoint_completed "packages"; then
+        role_frps_install_packages || {
+            log_error "Package installation failed. To retry, run:"
+            echo "  sudo ./bharatradar-install frp-server"
+            exit 1
+        }
+        checkpoint_mark "packages"
+    fi
+
+    # Phase: binary
+    if ! checkpoint_completed "binary"; then
+        role_frps_install_binary || {
+            log_error "FRP binary download failed. To retry, run:"
+            echo "  sudo ./bharatradar-install frp-server"
+            exit 1
+        }
+        checkpoint_mark "binary"
+    fi
+
+    # Phase: frp
+    if ! checkpoint_completed "frp"; then
+        role_frps_configure || {
+            log_error "FRP server configuration failed. To retry, run:"
+            echo "  sudo ./bharatradar-install frp-server"
+            exit 1
+        }
+        checkpoint_mark "frp"
+    fi
+
+    # Phase: nginx
+    if ! checkpoint_completed "nginx"; then
+        role_frps_configure_nginx || {
+            log_error "Nginx configuration failed. To retry, run:"
+            echo "  sudo ./bharatradar-install frp-server"
+            exit 1
+        }
+        checkpoint_mark "nginx"
+    fi
+
+    # Phase: ssl
+    if ! checkpoint_completed "ssl"; then
+        role_frps_setup_ssl || {
+            log_warn "SSL setup failed (DNS may not be ready yet). To retry, run:"
+            echo "  sudo ./bharatradar-install frp-server"
+        }
+        checkpoint_mark "ssl"
+    fi
+
+    # Phase: save
+    if ! checkpoint_completed "save"; then
+        role_frps_save_config
+        role_frps_post_install
+        checkpoint_mark "save"
+    fi
+
+    checkpoint_clear
+    log_success "FRP Server installation complete!"
 }

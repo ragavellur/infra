@@ -183,15 +183,62 @@ role_db_standby_post_install() {
 role_db_standby_run() {
     require_root
 
+    local phases=(config install replication save)
+
+    show_resume_banner "${phases[@]}"
+
     if [ -f /etc/bharatradar/config.env ]; then
         source /etc/bharatradar/config.env
         PRIMARY_DB_IP="${PRIMARY_DB_IP:-}"
         STANDBY_IP="${STANDBY_IP:-}"
     fi
 
-    role_db_standby_collect_config
-    role_db_standby_install_postgresql
-    role_db_standby_configure_replication
-    role_db_standby_save_config
-    role_db_standby_post_install
+    # Phase: config
+    if ! checkpoint_completed "config"; then
+        role_db_standby_collect_config
+
+        save_config_value "ROLE" "db-standby"
+        save_config_value "PRIMARY_DB_IP" "${PRIMARY_DB_IP}"
+        save_config_value "PRIMARY_DB_USER" "${PRIMARY_DB_USER:-bharatradar}"
+        save_config_value "PRIMARY_DB_PASSWORD" "${PRIMARY_DB_PASSWORD}"
+        save_config_value "STANDBY_IP" "${STANDBY_IP}"
+
+        checkpoint_mark "config"
+    else
+        load_partial_config || {
+            log_error "Saved config not found. To restart from scratch, run:"
+            echo "  sudo rm /etc/bharatradar/.install-progress /etc/bharatradar/.config.partial"
+            exit 1
+        }
+    fi
+
+    # Phase: install
+    if ! checkpoint_completed "install"; then
+        role_db_standby_install_postgresql || {
+            log_error "PostgreSQL installation failed. To retry, run:"
+            echo "  sudo ./bharatradar-install db-standby"
+            exit 1
+        }
+        checkpoint_mark "install"
+    fi
+
+    # Phase: replication
+    if ! checkpoint_completed "replication"; then
+        role_db_standby_configure_replication || {
+            log_error "Replication setup failed. To retry, run:"
+            echo "  sudo ./bharatradar-install db-standby"
+            exit 1
+        }
+        checkpoint_mark "replication"
+    fi
+
+    # Phase: save
+    if ! checkpoint_completed "save"; then
+        role_db_standby_save_config
+        role_db_standby_post_install
+        checkpoint_mark "save"
+    fi
+
+    checkpoint_clear
+    log_success "DB Standby installation complete!"
 }
