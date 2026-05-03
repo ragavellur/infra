@@ -544,9 +544,25 @@ role_hub_deploy_services() {
             return 0
         fi
         log_info "Deploying ${component}..."
-        kustomize build "$manifest_dir" 2>/dev/null \
-            | awk 'BEGIN{RS="---"; ORS="---"} !/kind: ServiceMonitor/ && /kind:/' \
-            | kubectl apply -f - -n bharatradar 2>&1 || true
+        
+        # Build manifests, strip ServiceMonitor (requires CRD), apply
+        local built
+        built=$(kustomize build "$manifest_dir" 2>&1)
+        local rc=$?
+        if [ $rc -ne 0 ]; then
+            log_error "kustomize build failed for ${component}:"
+            echo "$built"
+            return 1
+        fi
+        
+        echo "$built" | awk 'BEGIN{RS="---"; ORS="---"} !/kind: ServiceMonitor/ && /kind:/' | kubectl apply -f - -n bharatradar 2>&1
+        rc=$?
+        if [ $rc -ne 0 ]; then
+            log_error "kubectl apply failed for ${component}"
+            return 1
+        fi
+        
+        log_success "${component} deployed"
     }
 
     # Helper: wait for a deployment to be ready
@@ -557,16 +573,16 @@ role_hub_deploy_services() {
     }
 
     # Phase 1: Core services (no external dependencies)
-    deploy_component "api"
-    deploy_component "website"
+    deploy_component "api" || return 1
+    deploy_component "website" || return 1
 
     # Phase 2: ADS-B data sources (must exist before haproxy can resolve them)
-    deploy_component "ingest"
-    deploy_component "hub"
-    deploy_component "external"
-    deploy_component "reapi"
-    deploy_component "mlat"
-    deploy_component "planes"
+    deploy_component "ingest" || return 1
+    deploy_component "hub" || return 1
+    deploy_component "external" || return 1
+    deploy_component "reapi" || return 1
+    deploy_component "mlat" || return 1
+    deploy_component "planes" || return 1
 
     # Phase 3: Wait for data source deployments to be ready
     wait_for_deployment "ingest-readsb"
@@ -582,9 +598,9 @@ role_hub_deploy_services() {
     sleep 10
 
     # Phase 4: Dependent services (require data sources to be resolvable)
-    deploy_component "mlat-map"
-    deploy_component "history"
-    deploy_component "haproxy"
+    deploy_component "mlat-map" || return 1
+    deploy_component "history" || return 1
+    deploy_component "haproxy" || return 1
 
     log_success "All services deployed"
 
