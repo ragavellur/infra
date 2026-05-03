@@ -374,9 +374,37 @@ role_hub_install_k3s() {
         log_info "Installing K3s with embedded etcd..."
     fi
 
+    # Pre-download k3s binary to avoid GitHub redirect issues
+    # The official installer sometimes fails on GitHub->AWS S3 redirects
+    log_info "Pre-downloading K3s binary..."
+    local k3s_arch
+    k3s_arch=$(uname -m)
+    case "$k3s_arch" in
+        x86_64) k3s_arch="amd64" ;;
+        aarch64) k3s_arch="arm64" ;;
+        armv7l) k3s_arch="arm" ;;
+    esac
+    
+    local k3s_version="v1.35.4+k3s1"
+    local k3s_url="https://github.com/k3s-io/k3s/releases/download/${k3s_version}/k3s"
+    
+    if [ ! -f /usr/local/bin/k3s ]; then
+        if ! curl -fsSL -o /usr/local/bin/k3s "${k3s_url}"; then
+            log_warn "Failed to download from GitHub, trying direct fallback..."
+            # Fallback: try without -L first, then with
+            if ! curl -fsS -o /usr/local/bin/k3s "${k3s_url}"; then
+                log_error "K3s binary download failed. Check internet connectivity."
+                exit 1
+            fi
+        fi
+        chmod +x /usr/local/bin/k3s
+        log_success "K3s binary pre-downloaded"
+    fi
+
     # Use INSTALL_K3S_SKIP_START to prevent installer from auto-starting the service
+    # Use INSTALL_K3S_SKIP_DOWNLOAD since we already have the binary
     # This lets us clear stale data if it appears, then start manually
-    INSTALL_K3S_SKIP_START=true curl -sfL https://get.k3s.io | sh -s - server "${k3s_args[@]}"
+    INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_DOWNLOAD=true curl -sfL https://get.k3s.io | sh -s - server "${k3s_args[@]}"
 
     log_info "Starting K3s..."
     systemctl start k3s
