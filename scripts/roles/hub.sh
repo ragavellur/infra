@@ -47,25 +47,45 @@ role_hub_collect_config() {
     done
 
     echo ""
-    log_step "MinIO Configuration (History Service Storage)"
+    log_step "Storage Backend Configuration (History Service)"
     echo ""
-    echo "  The history service stores ADS-B data in MinIO (S3-compatible storage)."
-    echo "  MinIO runs on your shared services host alongside PostgreSQL and Redis."
+    echo "  How should the history service store ADS-B data?"
+    echo ""
+    echo "  1) MinIO          - S3-compatible storage on your Pi (recommended)"
+    echo "  2) Cloud Storage - Use existing rclone.conf (OneDrive, GCS, S3, etc.)"
     echo ""
 
-    prompt_input "MinIO endpoint (host:port)" "${MINIO_ENDPOINT:-192.168.200.187:9000}" MINIO_ENDPOINT
-    prompt_input "MinIO access key" "${MINIO_ROOT_USER:-minioadmin}" MINIO_ROOT_USER
-    prompt_input "MinIO secret key" "${MINIO_ROOT_PASSWORD:-}" MINIO_ROOT_PASSWORD
-    while [ -z "$MINIO_ROOT_PASSWORD" ]; do
-        log_error "Secret key cannot be empty"
-        prompt_input "MinIO secret key" "" MINIO_ROOT_PASSWORD
-    done
+    local storage_choice
+    prompt_select "Storage backend" "MinIO" "Cloud Storage" storage_choice
 
-    echo ""
-    echo "  Optional: Copy rclone config from existing file?"
-    prompt_input "Path to rclone.conf (leave empty to skip)" "" RCLONE_CONFIG_PATH
-    if [ -n "$RCLONE_CONFIG_PATH" ] && [ -f "$RCLONE_CONFIG_PATH" ]; then
-        log_info "Using rclone config from: $RCLONE_CONFIG_PATH"
+    if [ "$storage_choice" = "Cloud Storage" ]; then
+        echo ""
+        echo "  Enter path to your existing rclone.conf file"
+        echo "  (e.g., ~/.config/rclone/rclone.conf or /home/pi/.config/rclone/rclone.conf)"
+        echo ""
+        prompt_input "Path to rclone.conf" "~/.config/rclone/rclone.conf" RCLONE_CONFIG_PATH
+        RCLONE_CONFIG_PATH=$(eval echo "$RCLONE_CONFIG_PATH")
+        while [ ! -f "$RCLONE_CONFIG_PATH" ]; do
+            log_error "File not found: $RCLONE_CONFIG_PATH"
+            prompt_input "Path to rclone.conf" "" RCLONE_CONFIG_PATH
+            RCLONE_CONFIG_PATH=$(eval echo "$RCLONE_CONFIG_PATH")
+        done
+        log_success "Using rclone config from: $RCLONE_CONFIG_PATH"
+        MINIO_ENDPOINT=""
+        MINIO_ROOT_USER=""
+        MINIO_ROOT_PASSWORD=""
+    else
+        echo ""
+        echo "  Configure MinIO on your shared services host (Pi):"
+        echo ""
+        prompt_input "MinIO endpoint (host:port)" "${MINIO_ENDPOINT:-192.168.200.187:9000}" MINIO_ENDPOINT
+        prompt_input "MinIO access key" "${MINIO_ROOT_USER:-minioadmin}" MINIO_ROOT_USER
+        prompt_input "MinIO secret key" "${MINIO_ROOT_PASSWORD:-}" MINIO_ROOT_PASSWORD
+        while [ -z "$MINIO_ROOT_PASSWORD" ]; do
+            log_error "Secret key cannot be empty"
+            prompt_input "MinIO secret key" "" MINIO_ROOT_PASSWORD
+        done
+        RCLONE_CONFIG_PATH=""
     fi
 
     echo ""
@@ -682,7 +702,7 @@ role_hub_save_config() {
     cat > /etc/bharatradar/config.env <<EOF
 # BharatRadar Primary Hub Configuration
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Version: 3.5.4
+# Version: 3.5.5
 
 ROLE=hub
 BASE_DOMAIN="${BASE_DOMAIN}"
