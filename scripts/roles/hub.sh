@@ -276,32 +276,37 @@ recover_from_stale_data() {
 
     log_warn "K3s bootstrap failed: stale data in PostgreSQL."
     log_info "The database contains data from a previous installation with a different token."
-    echo ""
 
-    if prompt_confirm "Clear stale data and restart K3s?"; then
+    # In silent mode, auto-clear without prompting
+    if [ -n "${SILENT_MODE:-}" ] || { [ -n "${BASE_DOMAIN:-}" ] && [ -n "${REDIS_HOST:-}" ] && [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_PASSWORD:-}" ]; }; then
+        log_info "Silent mode: auto-clearing stale K3s data and restarting..."
         clear_stale_k3s_data "$db_connection_string"
-
-        systemctl stop k3s 2>/dev/null || true
-        sleep 2
-
-        log_info "Restarting K3s..."
-        systemctl restart k3s
-
-        log_info "Waiting for K3s to be ready..."
-        for i in $(seq 1 60); do
-            if kubectl cluster-info &>/dev/null 2>&1; then
-                log_success "K3s server is ready"
-                return 0
-            fi
-            sleep 2
-        done
-        log_error "K3s still not ready after restart"
-        log_info "Check logs: journalctl -u k3s.service -e"
-        exit 1
     else
-        log_error "K3s cannot start with stale data"
-        exit 1
+        echo ""
+        if ! prompt_confirm "Clear stale data and restart K3s?"; then
+            log_error "K3s cannot start with stale data"
+            exit 1
+        fi
+        clear_stale_k3s_data "$db_connection_string"
     fi
+
+    systemctl stop k3s 2>/dev/null || true
+    sleep 2
+
+    log_info "Restarting K3s..."
+    systemctl restart k3s
+
+    log_info "Waiting for K3s to be ready..."
+    for i in $(seq 1 60); do
+        if kubectl cluster-info &>/dev/null 2>&1; then
+            log_success "K3s server is ready"
+            return 0
+        fi
+        sleep 2
+    done
+    log_error "K3s still not ready after restart"
+    log_info "Check logs: journalctl -u k3s.service -e"
+    exit 1
 }
 
 role_hub_install_k3s() {
@@ -313,7 +318,13 @@ role_hub_install_k3s() {
 
     if [ "$k3s_installed" = true ] && kubectl cluster-info &>/dev/null 2>&1; then
         log_warn "K3s is already installed and running"
-        if prompt_confirm "Reinstall K3s? This will UNINSTALL the existing cluster"; then
+        # In silent mode, auto-reinstall
+        if [ -n "${SILENT_MODE:-}" ] || { [ -n "${BASE_DOMAIN:-}" ] && [ -n "${REDIS_HOST:-}" ] && [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_PASSWORD:-}" ]; }; then
+            log_info "Silent mode: auto-reinstalling K3s..."
+            /usr/local/bin/k3s-uninstall.sh 2>/dev/null || true
+            rm -rf /etc/rancher/k3s /var/lib/rancher/k3s /var/lib/kubelet
+            k3s_installed=false
+        elif prompt_confirm "Reinstall K3s? This will UNINSTALL the existing cluster"; then
             log_info "Uninstalling existing K3s..."
             /usr/local/bin/k3s-uninstall.sh 2>/dev/null || true
             rm -rf /etc/rancher/k3s /var/lib/rancher/k3s /var/lib/kubelet
@@ -357,13 +368,19 @@ role_hub_install_k3s() {
         if command -v psql &>/dev/null && has_stale_k3s_data "$DB_CONNECTION_STRING"; then
             log_warn "Stale K3s data found in PostgreSQL database."
             log_info "The database contains data from a previous installation with a different token."
-            echo ""
 
-            if prompt_confirm "Clear stale data before installing K3s?"; then
+            # In silent mode, auto-clear stale data without prompting
+            if [ -n "${SILENT_MODE:-}" ] || { [ -n "${BASE_DOMAIN:-}" ] && [ -n "${REDIS_HOST:-}" ] && [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_PASSWORD:-}" ]; }; then
+                log_info "Silent mode: auto-clearing stale K3s data..."
                 clear_stale_k3s_data "$DB_CONNECTION_STRING"
             else
-                log_error "K3s install will likely fail with stale data"
-                exit 1
+                echo ""
+                if prompt_confirm "Clear stale data before installing K3s?"; then
+                    clear_stale_k3s_data "$DB_CONNECTION_STRING"
+                else
+                    log_error "K3s install will likely fail with stale data"
+                    exit 1
+                fi
             fi
         fi
     fi
@@ -964,6 +981,12 @@ role_hub_run() {
             USE_EXTERNAL_DB="${USE_EXTERNAL_DB:-false}"
             FRP_ENABLED="${FRP_ENABLED:-false}"
             KEEPALIVED_ENABLED="${KEEPALIVED_ENABLED:-false}"
+            # Build DB connection string if using external DB and not already set
+            if [ "$USE_EXTERNAL_DB" = true ] && [ -z "${DB_CONNECTION_STRING:-}" ]; then
+                if [ -n "${DB_HOST:-}" ] && [ -n "${DB_DBPASS:-}" ]; then
+                    DB_CONNECTION_STRING="postgres://${DB_DBUSER:-k3s}:${DB_DBPASS}@${DB_HOST}:${DB_PORT:-5432}/${DB_DBNAME:-k3s}"
+                fi
+            fi
         else
             role_hub_collect_config
         fi
