@@ -20,10 +20,10 @@ Services (manifests/default):
 - external/   External feeds (cnvr.io)
 - hub/        Aggregation layer
 - mlat/       MLAT server ✅ running (ghcr.io/bharatradar/mlat-server)
-- reapi/      REST API
+- reapi/      REST API backend (readsb with --net-api-port=30152)
 - planes/     Public map ✅ running (ghcr.io/bharatradar/docker-tar1090-uuid)
 - mlat-map/   MLAT sync UI ✅ running (nginx proxies /api/0/mlat-server/)
-- api/        Main web API ✅ running (ghcr.io/bharatradar/api)
+- api/        Main web API ✅ running v5.0.0 (ghcr.io/bharatradar/api:5.0.0)
 - history/    Historical data ✅ running (amd64 only, dummy rclone secret)
 - redis/      Cache
 - resources.yaml  Namespace, Services, Ingresses, NetworkPolicies
@@ -41,7 +41,7 @@ All built with `--platform linux/amd64,linux/arm64` and pushed to `ghcr.io/bhara
 - `docker-tar1090-uuid` ← ghcr.io/sdr-enthusiasts/docker-tar1090 + uuid binaries
 - `mlat-server` ← ghcr.io/adsblol/mlat-server
 - `mlat-server-sync-map` ← ghcr.io/adsblol/mlat-server-sync-map + nginx proxy
-- `api` ← ghcr.io/adsblol/api
+- `api` ← ghcr.io/adsblol/api + patches (v2 routes, MY_DOMAIN, Redis, nginx routes)
 - `history` ← ghcr.io/adsblol/history (amd64 only)
 
 ## Deployment
@@ -49,6 +49,14 @@ All built with `--platform linux/amd64,linux/arm64` and pushed to `ghcr.io/bhara
 - Namespace: `bharatradar`
 - GHCR pull secret: `ghcr-secret` in `bharatradar` namespace (required for all deployments)
 - History has `nodeSelector: kubernetes.io/arch: amd64`
+
+## API (v5.0.0)
+- Image: `ghcr.io/bharatradar/api:5.0.0`
+- OpenAPI schema: 18 paths (4 v0 + 14 v2)
+- v2 endpoints: /v2/pia, /v2/mil, /v2/ladd, /v2/squawk/{squawk}, /v2/sqk/{squawk}, /v2/type/{aircraft_type}, /v2/reg/{registration}, /v2/registration/{registration}, /v2/hex/{icao_hex}, /v2/icao/{icao_hex}, /v2/callsign/{callsign}, /v2/point/{lat}/{lon}/{radius}, /v2/lat/{lat}/lon/{lon}/dist/{radius}, /v2/closest/{lat}/{lon}/{radius}
+- Path parameters work in Swagger UI "Try it out" mode
+- ReAPI backend: `reapi-readsb.bharatradar.svc.cluster.local:30152`
+- Requires `--net-api-port=30152` on reapi-readsb deployment
 
 ## Feeder
 - Feeder Pi (192.168.200.127) connects directly to `feed.bharat-radar.vellur.in:30004`
@@ -71,6 +79,8 @@ All built with `--platform linux/amd64,linux/arm64` and pushed to `ghcr.io/bhara
 - Peers: {} on MLAT map is normal with single feeder (requires multiple receivers)
 - `my.bharat-radar.vellur.in/` redirects to `map.bharat-radar.vellur.in/?filter_uuid=<uuid>` based on IP lookup from Redis `beast:clients`
 - API image built from `build/api/` which patches upstream `ghcr.io/adsblol/api` at runtime
+- v2 route registration bug fixed in v5.0.0 by removing broken decorator pattern
+- ReAPI port (--net-api-port=30152) required for v2 endpoints to fetch aircraft data
 
 ## TODO / Future Enhancements
 - **Remove FRP tunnel**: Move feeder connections to direct cluster IPs or use a proper load balancer. This will fix IP-based feeder identification on `my.bharat-radar.vellur.in`.

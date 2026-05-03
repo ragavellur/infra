@@ -11,7 +11,7 @@ patches:
   patch: |-
     - op: replace
       path: /spec/template/spec/containers/0/args
-      value: ["--net-only", "--net", "--net-receiver-id", "--net-connector=hub-readsb,30005,beast_in", "--device-type=none"]
+      value: ["--net-only", "--net", "--net-receiver-id", "--net-connector=hub-readsb,30005,beast_in", "--net-api-port=30152", "--device-type=none"]
     - op: replace
       path: /spec/template/spec/containers/0/livenessProbe
       value: null

@@ -9,7 +9,7 @@ spec:
       - name: ghcr-secret
       containers:
       - name: api
-        image: ghcr.io/bharatradar/api:latest
+        image: ghcr.io/bharatradar/api:5.0.0
         imagePullPolicy: Always
         envFrom:
         - configMapRef:
@@ -20,14 +20,20 @@ spec:
         - name: MY_DOMAIN
           value: "my.bharat-radar.vellur.in"
         - name: ADSBLOL_REDIS_HOST
-          value: "redis://:c4v2qHF218GQIgtpEkET1mTpe9OE0tEJ50EN4@192.168.200.187:6379"
+          value: "redis://:pXlpa1DdLpEn4Lih93H8l2zx42C0ThcTwBuHFiqA@192.168.200.187:6379"
+        - name: ADSBLOL_REAPI_ENDPOINT
+          value: "http://reapi-readsb.bharatradar.svc.cluster.local:30152/re-api/"
+        - name: ADSBLOL_STATS_URL
+          value: "http://hub-readsb.bharatradar.svc.cluster.local:150/stats.json"
+        - name: ADSBLOL_ENABLED_BG_TASKS
+          value: "_fetch_hub_stats,_fetch_ingest,_fetch_mlat,_loop"
         resources:
           requests:
             cpu: 100m
             memory: 128Mi
           limits:
             cpu: 1
-            memory: 256Mi
+            memory: 1Gi
       - name: nginx
         image: nginx:alpine
         ports:

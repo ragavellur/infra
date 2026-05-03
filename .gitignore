@@ -1,1 +1,7 @@
 website
+.credentials
+.env
+*.pem
+*.key
+kubeconfig
+

@@ -257,6 +257,7 @@ metadata:
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
     nginx.ingress.kubernetes.io/app-root: /syncmap
 spec:
+  ingressClassName: traefik
   tls:
   - hosts:
     - mlat.bharat-radar.vellur.in
@@ -272,14 +273,14 @@ spec:
             name: mlat-map
             port:
               name: http
-      - path: /api
+      - path: /api/0/mlat-server
         pathType: Prefix
         backend:
           service:
-            name: api
+            name: mlat-map
             port:
               name: http
-      - path: /api/0/mlat-server
+      - path: /mlat-data
         pathType: Prefix
         backend:
           service:
