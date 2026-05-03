@@ -312,8 +312,16 @@ role_hub_install_k3s() {
     fi
 
     if [ "$k3s_installed" = true ] && kubectl cluster-info &>/dev/null 2>&1; then
-        log_info "K3s already installed and running"
-        return 0
+        log_warn "K3s is already installed and running"
+        if prompt_confirm "Reinstall K3s? This will UNINSTALL the existing cluster"; then
+            log_info "Uninstalling existing K3s..."
+            /usr/local/bin/k3s-uninstall.sh 2>/dev/null || true
+            rm -rf /etc/rancher/k3s /var/lib/rancher/k3s /var/lib/kubelet
+            k3s_installed=false
+        else
+            log_info "Keeping existing K3s installation"
+            return 0
+        fi
     fi
 
     # If K3s is installed but not running, diagnose the failure
@@ -404,7 +412,13 @@ role_hub_install_k3s() {
     # Use INSTALL_K3S_SKIP_START to prevent installer from auto-starting the service
     # Use INSTALL_K3S_SKIP_DOWNLOAD since we already have the binary
     # This lets us clear stale data if it appears, then start manually
-    INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_DOWNLOAD=true curl -sfL https://get.k3s.io | sh -s - server "${k3s_args[@]}"
+    # Install K3s using official installer (binary already pre-downloaded)
+    log_info "Running K3s installer..."
+    INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_DOWNLOAD=true \
+        retry_with_backoff 3 sh -c "curl -sfL https://get.k3s.io | sh -s - server ${k3s_args[*]}" || {
+        log_error "K3s installer failed after 3 attempts"
+        return 1
+    }
 
     log_info "Starting K3s..."
     systemctl start k3s
@@ -827,6 +841,41 @@ EOF
     log_success "Credentials saved to ${creds_file}"
 }
 
+# Verify all pods are running
+role_hub_verify() {
+    log_info "Checking pod status..."
+
+    local max_wait=120
+    local waited=0
+    local all_ready=false
+
+    while [ $waited -lt $max_wait ]; do
+        local not_ready
+        not_ready=$(kubectl get pods -n bharatradar --no-headers 2>/dev/null | grep -v "Running\|Completed" | wc -l)
+
+        if [ "$not_ready" -eq 0 ]; then
+            all_ready=true
+            break
+        fi
+
+        if [ $((waited % 10)) -eq 0 ]; then
+            log_info "Waiting for pods... (${not_ready} not ready)"
+        fi
+
+        sleep 2
+        waited=$((waited + 2))
+    done
+
+    if [ "$all_ready" = true ]; then
+        log_success "All pods are running"
+        return 0
+    else
+        log_warn "Some pods are still starting"
+        kubectl get pods -n bharatradar
+        return 1
+    fi
+}
+
 role_hub_post_install() {
     local local_ip
     local_ip=$(hostname -I | awk '{print $1}')
@@ -870,30 +919,166 @@ role_hub_post_install() {
 role_hub_run() {
     require_root
 
-    # Load existing config if present
-    if [ -f /etc/bharatradar/config.env ]; then
-        source /etc/bharatradar/config.env
-        BASE_DOMAIN="${BASE_DOMAIN:-}"
-        READSB_LAT="${READSB_LAT:-}"
-        READSB_LON="${READSB_LON:-}"
-        REDIS_HOST="${REDIS_HOST:-}"
-        REDIS_PORT="${REDIS_PORT:-6379}"
-        REDIS_PASSWORD="${REDIS_PASSWORD:-}"
-        MINIO_ENDPOINT="${MINIO_ENDPOINT:-}"
-        MINIO_ROOT_USER="${MINIO_ROOT_USER:-}"
-        MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-}"
-        DB_HOST="${DB_HOST:-}"
-        DB_PORT="${DB_PORT:-5432}"
-        DB_DBNAME="${DB_DBNAME:-k3s}"
-        DB_DBUSER="${DB_DBUSER:-k3s}"
+    # Show resume banner if we have saved progress
+    show_resume_banner
+
+    # PHASE 1: Configuration
+    if ! checkpoint_completed "config"; then
+        log_step "Phase 1/5: Configuration"
+        echo ""
+
+        # Load existing config.env defaults if present (for re-run after completion)
+        if [ -f /etc/bharatradar/config.env ]; then
+            source /etc/bharatradar/config.env
+        fi
+
+        role_hub_collect_config
+
+        # Save all answers to partial config for resume support
+        save_config_value "ROLE" "hub"
+        save_config_value "BASE_DOMAIN" "${BASE_DOMAIN}"
+        save_config_value "READSB_LAT" "${READSB_LAT}"
+        save_config_value "READSB_LON" "${READSB_LON}"
+        save_config_value "TIMEZONE" "${TIMEZONE}"
+        save_config_value "GHCR_USERNAME" "${GHCR_USERNAME}"
+        save_config_value "GHCR_PASSWORD" "${GHCR_PASSWORD}"
+        save_config_value "REDIS_HOST" "${REDIS_HOST}"
+        save_config_value "REDIS_PORT" "${REDIS_PORT:-6379}"
+        save_config_value "REDIS_PASSWORD" "${REDIS_PASSWORD}"
+        save_config_value "MINIO_ENDPOINT" "${MINIO_ENDPOINT}"
+        save_config_value "MINIO_ROOT_USER" "${MINIO_ROOT_USER}"
+        save_config_value "MINIO_ROOT_PASSWORD" "${MINIO_ROOT_PASSWORD}"
+        save_config_value "RCLONE_CONFIG_PATH" "${RCLONE_CONFIG_PATH:-}"
+        save_config_value "USE_EXTERNAL_DB" "${USE_EXTERNAL_DB}"
+        save_config_value "DB_HOST" "${DB_HOST:-}"
+        save_config_value "DB_PORT" "${DB_PORT:-5432}"
+        save_config_value "DB_DBNAME" "${DB_DBNAME:-k3s}"
+        save_config_value "DB_DBUSER" "${DB_DBUSER:-k3s}"
+        save_config_value "DB_CONNECTION_STRING" "${DB_CONNECTION_STRING:-}"
+        save_config_value "FRP_ENABLED" "${FRP_ENABLED}"
+        save_config_value "FRP_SERVER" "${FRP_SERVER:-}"
+        save_config_value "FRP_TOKEN" "${FRP_TOKEN:-}"
+        save_config_value "KEEPALIVED_ENABLED" "${KEEPALIVED_ENABLED}"
+        save_config_value "KEEPALIVED_VIP" "${KEEPALIVED_VIP:-}"
+        save_config_value "KEEPALIVED_PRIORITY" "100"
+        save_config_value "K3S_TOKEN" "${K3S_TOKEN:-}"
+
+        checkpoint_mark "config"
+        log_success "Configuration saved"
+    else
+        log_step "Phase 1/5: Configuration"
+        log_success "Already completed - loading saved answers"
+        load_partial_config || {
+            log_error "Cannot load saved configuration from ${partial_config}"
+            exit 1
+        }
     fi
 
-    role_hub_collect_config
-    role_hub_install_k3s
-    setup_kubectl
-    install_bharatradar_cli
-    role_hub_create_secrets
-    role_hub_deploy_services
-    role_hub_save_config
+    # PHASE 2: K3s Installation
+    if ! checkpoint_completed "k3s"; then
+        log_step "Phase 2/5: K3s Installation"
+        echo ""
+
+        role_hub_install_k3s || {
+            log_error "Phase 2 FAILED: K3s installation failed"
+            echo ""
+            echo "  To retry from this step, run:"
+            echo "    sudo ./bharatradar-install hub"
+            echo ""
+            echo "  To diagnose:"
+            echo "    journalctl -u k3s -n 50 --no-pager"
+            echo ""
+            exit 1
+        }
+
+        # Save the generated token for resume consistency
+        save_config_value "K3S_TOKEN" "${K3S_TOKEN}"
+
+        checkpoint_mark "k3s"
+        log_success "K3s installed"
+    else
+        log_step "Phase 2/5: K3s Installation"
+        log_success "Already completed"
+    fi
+
+    # PHASE 3: Secrets
+    if ! checkpoint_completed "secrets"; then
+        log_step "Phase 3/5: Secrets"
+        echo ""
+
+        setup_kubectl
+        install_bharatradar_cli
+
+        role_hub_create_secrets || {
+            log_error "Phase 3 FAILED: Could not create secrets"
+            echo ""
+            echo "  To retry from this step, run:"
+            echo "    sudo ./bharatradar-install hub"
+            echo ""
+            exit 1
+        }
+
+        checkpoint_mark "secrets"
+        log_success "Secrets created"
+    else
+        log_step "Phase 3/5: Secrets"
+        log_success "Already completed"
+    fi
+
+    # PHASE 4: Deploy Services
+    if ! checkpoint_completed "deploy"; then
+        log_step "Phase 4/5: Deploy Services"
+        echo ""
+
+        role_hub_deploy_services || {
+            log_error "Phase 4 FAILED: Deployment failed"
+            echo ""
+            echo "  To retry from this step, run:"
+            echo "    sudo ./bharatradar-install hub"
+            echo ""
+            echo "  To check status:"
+            echo "    kubectl get pods -n bharatradar"
+            echo ""
+            exit 1
+        }
+
+        checkpoint_mark "deploy"
+        log_success "Services deployed"
+    else
+        log_step "Phase 4/5: Deploy Services"
+        log_success "Already completed"
+    fi
+
+    # PHASE 5: Verify
+    if ! checkpoint_completed "verify"; then
+        log_step "Phase 5/5: Verification"
+        echo ""
+
+        role_hub_verify || {
+            log_warn "Phase 5: Some pods are not ready yet"
+            echo ""
+            echo "  To retry verification, run:"
+            echo "    sudo ./bharatradar-install hub"
+            echo ""
+            echo "  To check status manually:"
+            echo "    kubectl get pods -n bharatradar"
+            echo ""
+            exit 1
+        }
+
+        checkpoint_mark "verify"
+        log_success "Verification passed"
+    else
+        log_step "Phase 5/5: Verification"
+        log_success "Already completed"
+    fi
+
+    # Finalize: move partial config to permanent config
+    if [ -f "$partial_config" ]; then
+        cp "$partial_config" /etc/bharatradar/config.env
+        chmod 600 /etc/bharatradar/config.env
+    fi
+    checkpoint_clear
+
     role_hub_post_install
 }

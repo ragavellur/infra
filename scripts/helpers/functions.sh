@@ -265,6 +265,102 @@ setup_kubectl() {
     log_success "kubectl configured for ${target_user}"
 }
 
+# Checkpoint / resume functions
+# Track install progress so we can resume from failures
+
+checkpoint_file="/etc/bharatradar/.install-progress"
+partial_config="/etc/bharatradar/.config.partial"
+
+save_config_value() {
+    local key="$1"
+    local value="$2"
+
+    mkdir -p "$(dirname "$partial_config")"
+    chmod 700 "$(dirname "$partial_config")"
+
+    if grep -q "^${key}=" "$partial_config" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=\"${value}\"|" "$partial_config"
+    else
+        echo "${key}=\"${value}\"" >> "$partial_config"
+    fi
+    chmod 600 "$partial_config"
+}
+
+load_partial_config() {
+    if [ -f "$partial_config" ]; then
+        source "$partial_config"
+        log_info "Loaded saved configuration (resume mode)"
+        return 0
+    fi
+    return 1
+}
+
+checkpoint_mark() {
+    local phase="$1"
+    echo "COMPLETED:${phase}:$(date -u +%s)" >> "$checkpoint_file"
+    chmod 600 "$checkpoint_file"
+}
+
+checkpoint_completed() {
+    local phase="$1"
+    grep -q "^COMPLETED:${phase}:" "$checkpoint_file" 2>/dev/null
+}
+
+checkpoint_clear() {
+    rm -f "$checkpoint_file"
+    rm -f "$partial_config"
+}
+
+# Retry with exponential backoff
+retry_with_backoff() {
+    local max_attempts="${1:-3}"
+    shift
+    local attempt=1
+    local delay=2
+
+    while [ $attempt -le $max_attempts ]; do
+        if "$@"; then
+            return 0
+        fi
+
+        if [ $attempt -lt $max_attempts ]; then
+            log_warn "Attempt ${attempt}/${max_attempts} failed. Retrying in ${delay}s..."
+            sleep $delay
+            delay=$((delay * 2))
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    log_error "All ${max_attempts} attempts failed."
+    return 1
+}
+
+# Show resume banner if we have saved progress
+show_resume_banner() {
+    if [ ! -f "$checkpoint_file" ]; then
+        return
+    fi
+
+    echo ""
+    echo -e "${CYAN}>>> Resuming Previous Installation${NC}"
+    echo ""
+
+    local saved_date=""
+    if [ -f "$partial_config" ]; then
+        saved_date=$(stat -c %y "$partial_config" 2>/dev/null | cut -d' ' -f1,2 | cut -d'.' -f1)
+        log_info "Saved progress from: ${saved_date}"
+    fi
+
+    for phase in config k3s secrets deploy verify; do
+        if checkpoint_completed "$phase"; then
+            echo -e "  ${GREEN}✓${NC} Phase: ${phase}"
+        else
+            echo -e "  ${RED}✗${NC} Phase: ${phase} (pending)"
+        fi
+    done
+    echo ""
+}
+
 # Install bharatradar-install into PATH
 install_bharatradar_cli() {
     log_step "Installing CLI to PATH"
