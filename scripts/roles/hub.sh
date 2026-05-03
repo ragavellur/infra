@@ -953,7 +953,20 @@ role_hub_run() {
             source /etc/bharatradar/config.env
         fi
 
-        role_hub_collect_config
+        # Skip interactive prompts if all required vars are already set (silent mode)
+        if [ -n "${BASE_DOMAIN:-}" ] && [ -n "${REDIS_HOST:-}" ] && [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_PASSWORD:-}" ]; then
+            log_info "Using provided configuration (silent mode)"
+            # Ensure defaults for optional vars
+            READSB_LAT="${READSB_LAT:-18.480718}"
+            READSB_LON="${READSB_LON:-73.898235}"
+            TIMEZONE="${TIMEZONE:-UTC}"
+            REDIS_PORT="${REDIS_PORT:-6379}"
+            USE_EXTERNAL_DB="${USE_EXTERNAL_DB:-false}"
+            FRP_ENABLED="${FRP_ENABLED:-false}"
+            KEEPALIVED_ENABLED="${KEEPALIVED_ENABLED:-false}"
+        else
+            role_hub_collect_config
+        fi
 
         # Save all answers to partial config for resume support
         save_config_value "ROLE" "hub"
