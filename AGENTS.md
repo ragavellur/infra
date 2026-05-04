@@ -85,15 +85,49 @@ All built with `--platform linux/amd64,linux/arm64` and pushed to `ghcr.io/bhara
 - ReAPI port (--net-api-port=30152) required for v2 endpoints to fetch aircraft data
 
 ## TODO / Future Enhancements
-- **Remove FRP tunnel**: Move feeder connections to direct cluster IPs or use a proper load balancer. This will fix IP-based feeder identification on `my.bharat-radar.vellur.in`. The FRP tunnel obscures real client IPs, causing the API to see internal Traefik pod IPs instead of feeder public IPs.
-- **Feeder self-registration script**: A bash script for feeders to register their UUID without DNS access:
+
+### High Priority
+- ~~**Remove FRP tunnel**~~ → **Alternative: Feeder direct connect or FRP on both nodes**
+  - Current: FRP tunnel masks feeder IPs, breaking `my.bharat-radar.vellur.in` UUID lookup
+  - Options: (a) Move feeders to direct cluster IP, (b) Run frpc on HA Server too for full failover, (c) Use a public load balancer instead of FRP
+  - Note: `my.bharat-radar.vellur.in` now redirects correctly to `map.bharat-radar.vellur.in`, but UUID filter only works when API sees real feeder IP
+- **Feeder self-registration script**: A bash script for feeders to get their UUID without relying on IP lookup:
   1. Script runs on feeder Pi
-  2. Calls `/api/0/my` to get UUIDs of all feeders
-  3. Matches local MAC or hostname to UUID
+  2. Queries Redis or API for all connected feeders
+  3. Matches local MAC address or hostname to UUID
   4. Prints personalized map URL (`map.bharat-radar.vellur.in/?filter_uuid=<uuid>`)
-  5. Useful if FRP stays long-term or for feeders behind CGNAT/proxies
-- **Shared Storage for PVCs**: Use Longhorn, NFS, or Ceph to replace local-path provisioner. This will allow `planes-readsb` and `mlat-mlat-server` to fail over to the HA Server during Primary Hub failures.
-- **DaemonSet for Beast/MLAT**: Run ingest-readsb and mlat-mlat-server as DaemonSets on both Hub nodes. Eliminates 30-60s pod reschedule window during failover. See install.md v3.3.0 for details.
-- **Traefik IP Forwarding**: Investigate Traefik `ForwardedHeaders` or `trustForwardHeader` to preserve `X-Real-IP` from the AWS nginx proxy. Currently the API sees Traefik pod IPs, breaking IP-based lookups even for direct connections.
-- **Automated API Image Rebuild**: The `api:5.0.0` image relies on runtime patches (`build/api/patch.py`) to replace hardcoded `adsb.lol` references. A proper CI/CD pipeline should build a patched image at build time rather than runtime.
-- **Version Pinning**: K3s installer currently downloads latest stable. Pin to a specific version (e.g., v1.35.4+k3s1) for reproducible deployments.
+  5. Useful for feeders behind CGNAT, proxies, or when FRP is active
+- **FRP Client on HA Server**: Currently frpc only runs on Primary Hub. If Primary fails, the FRP tunnel dies even though K3s fails over. Need to run frpc on HA Server with Keepalived VIP binding so the tunnel always follows the active node.
+
+### Medium Priority
+- **Shared Storage for PVCs**: Use Longhorn, NFS, or Ceph to replace local-path provisioner.
+  - Affected pods: `planes-readsb` (planes-state PVC), `mlat-mlat-server` (mlat PVC)
+  - Currently: PVCs are node-bound; pods cannot reschedule to HA Server during failover
+  - With shared storage: Full stateful failover including map history and MLAT sync state
+- **DaemonSet for Beast/MLAT**: Run `ingest-readsb` and `mlat-mlat-server` as DaemonSets on both Hub nodes.
+  - Eliminates 30-60s pod reschedule window during node failover
+  - Each node runs its own local instance; VIP determines which one receives traffic
+  - Requires shared storage for state persistence across nodes
+- **Traefik IP Forwarding**: Configure Traefik to preserve `X-Real-IP` and `X-Forwarded-For` headers from the AWS nginx proxy.
+  - Currently: API sees Traefik pod IPs (`10.42.x.x`) instead of real client IPs
+  - Fix: Enable `forwardedHeaders.trustedIPs` in Traefik Helm values to trust the AWS server IP
+  - This would at least fix IP lookups for direct API calls (though FRP still masks feeder IPs)
+
+### Low Priority / Infrastructure
+- **Automated API Image Rebuild**: The `api:5.0.0` image relies on runtime patches (`build/api/patch.py`) to replace hardcoded `adsb.lol` references.
+  - Current workaround: Patched `app.py` mounted via ConfigMap in the deployment
+  - Proper fix: Build a custom image in CI/CD that applies patches at build time
+  - Reference: `build/api/Dockerfile` + `build/api/patch.py`
+- **Version Pinning**: K3s installer downloads latest stable by default.
+  - Pin to a specific version (e.g., `v1.35.4+k3s1`) for reproducible deployments
+  - Update the installer to use `INSTALL_K3S_VERSION` env var consistently across all roles
+- **AWS nginx Config as Code**: The nginx server blocks on the AWS EC2 server are manually configured.
+  - Templatize the nginx config in the repo (e.g., `scripts/aws/nginx-subdomains.conf`)
+  - Add certbot expansion commands to the frp-server installer role
+  - Document subdomain addition procedure in install.md
+- **Keepalived Interface Selection**: The HA Server auto-detected `wlp3s0` (WiFi) instead of the wired interface.
+  - Add `KEEPALIVED_INTERFACE` override option to the config
+  - Default to the interface with the default route, but allow explicit override
+- **Cleanup: Remove haproxy references**: The old haproxy deployment was removed from the architecture but some docs still mention it.
+  - Audit all docs and remove stale haproxy references
+  - Update architecture diagrams to show direct LoadBalancer services instead
