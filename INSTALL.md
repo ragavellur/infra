@@ -1,6 +1,6 @@
 # BharatRadar Infrastructure - Installation Guide
 
-> **Version:** 3.2.0
+> **Version:** 3.3.0
 > **Last Updated:** May 2026
 > **GitHub:** https://github.com/ragavellur/infra
 
@@ -43,18 +43,26 @@ Complete guide to deploying the BharatRadar ADS-B/MLAT aggregator platform with 
                    |             |              |
                    v             v              v
          ┌─────────────────────────────────────────────┐
-         │       HUB (Ubuntu i7, K3s server)           │
-         │       192.168.200.145                       │
+         │       PRIMARY HUB (Ubuntu i7)               │
+         │       192.168.200.145 (MASTER)              │
+         │       VIP: 192.168.200.150                  │
          │                                             │
          │  ingest  hub  planes  api  mlat  mlat-map   │
-         │  haproxy(3x)  redis  external  reapi        │
+         │  external  reapi  history  website          │
          └──────────────┬──────────────────────────────┘
+                        │ k3s join (shared PostgreSQL)
+                        v
+         ┌─────────────────────────────────────────────┐
+         │       HA SERVER (Ubuntu i7, Backup)         │
+         │       192.168.200.186 (BACKUP)              │
+         │       VIP: 192.168.200.150 (on failover)    │
+         └─────────────────────────────────────────────┘
                         │ k3s join
                         v
          ┌─────────────────────────────┐
          │  BR-AGGRIGATOR (Pi, agent)  │
          │  192.168.200.187            │
-         │  Failover node              │
+         │  PostgreSQL, Redis, MinIO   │
          └─────────────────────────────┘
 
     FEEDER PI (not K3s)
@@ -67,8 +75,9 @@ Complete guide to deploying the BharatRadar ADS-B/MLAT aggregator platform with 
 
 | Node | IP | Role | OS | Arch | K3s |
 |------|----|------|----|------|-----|
-| **Hub** | 192.168.200.145 | K3s server, all services | Ubuntu 24.04 | amd64 | Yes |
-| **br-aggrigator** | 192.168.200.187 | K3s agent, failover | Debian 12 (Pi) | arm64 | Yes |
+| **Primary Hub** | 192.168.200.145 | K3s server (MASTER), all services | Ubuntu 24.04 | amd64 | Yes |
+| **HA Server** | 192.168.200.186 | K3s server (BACKUP), failover | Ubuntu 24.04 | amd64 | Yes |
+| **br-aggrigator** | 192.168.200.187 | K3s agent, shared services | Debian 12 (Pi) | arm64 | Yes |
 | **Feeder Pi** | 192.168.200.127 | RTL-SDR + readsb + mlat-client | Raspberry Pi OS | arm64 | No |
 
 ### Components
