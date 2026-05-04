@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-app-py
+data:
+  app.py: |
+    # This file is patched at runtime by patch.py
+    # See build/api/patch.py for the source patches
+    # The full patched app.py is mounted here to override the image's default
+    # which has outdated hardcoded adsb.lol references
+    # TO APPLY: kubectl create configmap api-app-py --from-file=app.py=<patched_file> -n bharatradar
+    # Or use the build process to bake this into the image

@@ -217,22 +217,12 @@ spec:
             port:
               name: http
 ---
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: my-rewrite
-  namespace: bharatradar
-spec:
-  replacePath:
-    path: /api/0/my
----
 kind: Ingress
 apiVersion: networking.k8s.io/v1
 metadata:
   name: my
   annotations:
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
-    traefik.ingress.kubernetes.io/router.middlewares: bharatradar-my-rewrite@kubernetescrd
 spec:
   tls:
   - hosts:
