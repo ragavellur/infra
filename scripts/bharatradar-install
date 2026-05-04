@@ -1,5 +1,5 @@
 #!/bin/bash
-# BharatRadar Infrastructure Installer v5.2.0
+# BharatRadar Infrastructure Installer v5.3.1
 #
 # Main entry point for all installation workflows.
 # Supports interactive mode and non-interactive (role-based) mode.
